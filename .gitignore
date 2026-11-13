@@ -1,0 +1,8 @@
+# Environment variables and secrets
+.env
+.env.*
+!.env.example
+client/.env
+client/.env.*
+server/.env
+server/.env.*
