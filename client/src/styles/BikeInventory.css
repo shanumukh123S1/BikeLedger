@@ -1,0 +1,495 @@
+
+/* =====================================
+   BIKE INVENTORY - MAIN LAYOUT
+===================================== */
+
+.inventory-layout {
+  display: flex;
+  min-height: 100vh;
+  background: #f4f6fa;
+}
+
+.inventory-main {
+  flex: 1;
+  min-width: 0;
+  padding: 32px;
+  background: #f4f6fa;
+}
+
+/* =====================================
+   PAGE HEADER
+===================================== */
+
+.inventory-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  margin-bottom: 26px;
+}
+
+.inventory-header h1 {
+  margin: 0 0 8px;
+  color: #1c3048;
+  font-size: 27px;
+}
+
+.inventory-header p {
+  margin: 0;
+  color: #7d8998;
+  font-size: 13px;
+}
+
+.inventory-add-button,
+.inventory-save-button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 7px;
+  background: #183754;
+  color: white;
+  font-weight: 600;
+  cursor: pointer;
+  transition: background 0.2s ease;
+}
+
+.inventory-add-button:hover,
+.inventory-save-button:hover {
+  background: #315d85;
+}
+
+.inventory-add-button:disabled,
+.inventory-save-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+/* =====================================
+   INVENTORY SUMMARY CARDS
+===================================== */
+
+.inventory-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 18px;
+  margin-bottom: 22px;
+}
+
+.inventory-summary-card {
+  padding: 20px;
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+}
+
+.inventory-summary-card span {
+  color: #77869a;
+  font-size: 12px;
+}
+
+.inventory-summary-card h2 {
+  margin: 10px 0 5px;
+  color: #183754;
+  font-size: 27px;
+}
+
+.inventory-summary-card p {
+  margin: 0;
+  color: #8a97a7;
+  font-size: 12px;
+}
+
+/* =====================================
+   SUCCESS AND ERROR MESSAGES
+===================================== */
+
+.inventory-message {
+  padding: 13px 16px;
+  margin-bottom: 18px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.inventory-message.error {
+  color: #b42318;
+  background: #fff0ee;
+}
+
+.inventory-message.success {
+  color: #167044;
+  background: #eaf8f0;
+}
+
+/* =====================================
+   ADD / EDIT BIKE FORM
+===================================== */
+
+.inventory-form-card {
+  padding: 23px;
+  margin-bottom: 22px;
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+}
+
+.inventory-form-heading,
+.inventory-section-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 20px;
+}
+
+.inventory-form-heading h2,
+.inventory-section-heading h2 {
+  margin: 0;
+  color: #1c3048;
+  font-size: 18px;
+}
+
+.inventory-form-heading button {
+  border: none;
+  background: transparent;
+  color: #718096;
+  font-size: 21px;
+  cursor: pointer;
+}
+
+.inventory-form-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 18px;
+}
+
+.inventory-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.inventory-field.full-width {
+  grid-column: 1 / -1;
+}
+
+.inventory-field label {
+  color: #34465b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.inventory-field input,
+.inventory-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #dce2ea;
+  border-radius: 7px;
+  outline: none;
+  background: white;
+  color: #34465b;
+  font: inherit;
+  font-size: 13px;
+}
+
+.inventory-field input:focus,
+.inventory-field select:focus {
+  border-color: #326da5;
+  box-shadow: 0 0 0 3px rgba(50, 109, 165, 0.08);
+}
+
+.inventory-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.inventory-cancel-button {
+  padding: 12px 18px;
+  border: none;
+  border-radius: 7px;
+  background: #eef2f7;
+  color: #34465b;
+  cursor: pointer;
+}
+
+.inventory-cancel-button:hover {
+  background: #e0e7ef;
+}
+
+/* =====================================
+   SEARCH AND FILTER TOOLBAR
+===================================== */
+
+.inventory-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 17px;
+  margin-bottom: 22px;
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+}
+
+.inventory-toolbar input {
+  flex: 1;
+  min-width: 220px;
+}
+
+.inventory-toolbar input,
+.inventory-toolbar select {
+  padding: 12px;
+  border: 1px solid #dce2ea;
+  border-radius: 7px;
+  outline: none;
+  background: white;
+  color: #34465b;
+  font: inherit;
+  font-size: 13px;
+}
+
+.inventory-toolbar input:focus,
+.inventory-toolbar select:focus {
+  border-color: #326da5;
+}
+
+/* =====================================
+   INVENTORY SECTION
+===================================== */
+
+.inventory-section {
+  padding: 22px;
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+}
+
+.inventory-section-heading span {
+  color: #7d8998;
+  font-size: 12px;
+}
+
+/* =====================================
+   BIKE MODEL GRID
+===================================== */
+
+.inventory-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 20px;
+}
+
+.inventory-bike-card {
+  min-width: 0;
+  overflow: hidden;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+  background: white;
+  transition: box-shadow 0.2s ease, transform 0.2s ease;
+}
+
+.inventory-bike-card:hover {
+  transform: translateY(-3px);
+  box-shadow: 0 8px 22px rgba(20, 45, 70, 0.09);
+}
+
+/* =====================================
+   BIKE IMAGE
+===================================== */
+
+.inventory-image-wrapper {
+  position: relative;
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 175px;
+  overflow: hidden;
+  background: #f7f8fa;
+}
+
+.inventory-image-wrapper img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  padding: 10px;
+  box-sizing: border-box;
+}
+
+.inventory-image-fallback {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+  color: #8491a1;
+  font-size: 12px;
+}
+
+/* =====================================
+   BIKE DETAILS
+===================================== */
+
+.inventory-bike-details {
+  padding: 17px;
+}
+
+.inventory-brand {
+  color: #326da5;
+  font-size: 12px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+.inventory-bike-details h3 {
+  margin: 6px 0;
+  color: #1c3048;
+  font-size: 17px;
+}
+
+.inventory-category {
+  display: inline-block;
+  padding: 5px 9px;
+  border-radius: 20px;
+  background: #edf2f8;
+  color: #52677e;
+  font-size: 10px;
+}
+
+.inventory-price {
+  margin: 15px 0;
+  color: #183754;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+/* =====================================
+   STOCK AVAILABILITY
+===================================== */
+
+.inventory-stock-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 11px 0;
+  border-top: 1px solid #edf0f4;
+  border-bottom: 1px solid #edf0f4;
+  color: #65758a;
+  font-size: 12px;
+}
+
+.stock-available {
+  color: #16834a;
+}
+
+.stock-empty {
+  color: #c43232;
+}
+
+/* =====================================
+   AVAILABLE COLOURS
+===================================== */
+
+.inventory-colors {
+  min-height: 32px;
+  color: #77869a;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* =====================================
+   EDIT AND PERMANENT DELETE BUTTONS
+===================================== */
+
+.inventory-card-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 15px;
+}
+
+.inventory-edit-button,
+.inventory-delete-button {
+  flex: 1;
+  padding: 10px 8px;
+  border: none;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 11px;
+  font-weight: 600;
+  transition: background 0.2s ease, opacity 0.2s ease;
+}
+
+.inventory-edit-button {
+  background: #eaf2fb;
+  color: #245b8b;
+}
+
+.inventory-edit-button:hover {
+  background: #d8e8f8;
+}
+
+.inventory-delete-button {
+  background: #fff0ee;
+  color: #b42318;
+}
+
+.inventory-delete-button:hover {
+  background: #fbd9d5;
+}
+
+.inventory-edit-button:disabled,
+.inventory-delete-button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+/* =====================================
+   LOADING / EMPTY STATE
+===================================== */
+
+.inventory-empty {
+  padding: 45px 15px;
+  color: #8491a1;
+  text-align: center;
+  font-size: 13px;
+}
+
+/* =====================================
+   RESPONSIVE DESIGN
+===================================== */
+
+@media (max-width: 1100px) {
+  .inventory-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (max-width: 700px) {
+  .inventory-main {
+    padding: 18px;
+  }
+
+  .inventory-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .inventory-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .inventory-field.full-width {
+    grid-column: auto;
+  }
+
+  .inventory-section {
+    padding: 15px;
+  }
+}

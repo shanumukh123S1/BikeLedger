@@ -1,0 +1,296 @@
+
+.bikes-main {
+  flex: 1;
+  min-width: 0;
+  padding: 32px;
+  background: #f4f6fa;
+}
+
+.bikes-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 15px;
+  margin-bottom: 25px;
+}
+
+.bikes-header h1 {
+  color: #1c3048;
+  font-size: 26px;
+  margin: 0 0 8px;
+}
+
+.bikes-header p {
+  color: #7d8998;
+  font-size: 13px;
+  margin: 0;
+}
+
+.add-bike-button,
+.bike-save-button {
+  background: #183754;
+  color: white;
+  border: none;
+  border-radius: 7px;
+  padding: 12px 18px;
+  cursor: pointer;
+  font-weight: 600;
+}
+
+.add-bike-button:hover,
+.bike-save-button:hover {
+  background: #315d85;
+}
+
+.bike-summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  max-width: 330px;
+  padding: 20px;
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.bike-summary span {
+  color: #77869a;
+  font-size: 12px;
+}
+
+.bike-summary h2 {
+  color: #183754;
+  font-size: 27px;
+  margin: 9px 0 0;
+}
+
+.bike-summary-icon {
+  font-size: 25px;
+  background: #eaf0f7;
+  padding: 13px;
+  border-radius: 9px;
+}
+
+.bike-toolbar {
+  background: white;
+  border: 1px solid #e5eaf0;
+  padding: 17px;
+  border-radius: 10px;
+  margin-bottom: 20px;
+}
+
+.bike-toolbar input {
+  width: 100%;
+  max-width: 480px;
+  padding: 12px;
+  border: 1px solid #dce2ea;
+  border-radius: 7px;
+  outline: none;
+}
+
+.bike-toolbar input:focus {
+  border-color: #326da5;
+}
+
+.bike-alert {
+  padding: 12px 15px;
+  margin-bottom: 15px;
+  border-radius: 7px;
+  font-size: 13px;
+}
+
+.bike-alert.error {
+  color: #b42318;
+  background: #fff0ee;
+}
+
+.bike-alert.success {
+  color: #167044;
+  background: #eaf8f0;
+}
+
+.bike-form-card,
+.bike-table-card {
+  background: white;
+  border: 1px solid #e5eaf0;
+  border-radius: 10px;
+  padding: 22px;
+  margin-bottom: 22px;
+}
+
+.bike-form-heading,
+.bike-table-heading {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 22px;
+}
+
+.bike-form-heading h2,
+.bike-table-heading h2 {
+  color: #1c3048;
+  font-size: 17px;
+  margin: 0;
+}
+
+.bike-form-heading button {
+  border: none;
+  background: transparent;
+  font-size: 20px;
+  cursor: pointer;
+  color: #718096;
+}
+
+.bike-form-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 18px;
+}
+
+.bike-field {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.bike-field label {
+  color: #34465b;
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.bike-field input,
+.bike-field select {
+  width: 100%;
+  box-sizing: border-box;
+  padding: 12px;
+  border: 1px solid #dce2ea;
+  border-radius: 7px;
+  outline: none;
+  font: inherit;
+  font-size: 13px;
+  background: white;
+}
+
+.bike-field input:focus,
+.bike-field select:focus {
+  border-color: #326da5;
+  box-shadow: 0 0 0 3px rgba(50,109,165,0.08);
+}
+
+.bike-field small {
+  color: #b42318;
+  font-size: 11px;
+}
+
+.bike-form-grid .full-width {
+  grid-column: 1 / -1;
+}
+
+.bike-form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 12px;
+  margin-top: 22px;
+}
+
+.bike-cancel-button {
+  background: #eef2f7;
+  color: #34465b;
+  border: none;
+  border-radius: 7px;
+  padding: 12px 18px;
+  cursor: pointer;
+}
+
+.bike-save-button:disabled {
+  opacity: 0.6;
+  cursor: not-allowed;
+}
+
+.bike-table-heading span {
+  color: #7d8998;
+  font-size: 12px;
+}
+
+.bike-table-wrapper {
+  overflow-x: auto;
+}
+
+.bike-table {
+  width: 100%;
+  min-width: 850px;
+  border-collapse: collapse;
+  text-align: left;
+}
+
+.bike-table th {
+  background: #f4f6fa;
+  color: #65758a;
+  font-size: 12px;
+  padding: 14px;
+}
+
+.bike-table td {
+  padding: 15px 14px;
+  border-bottom: 1px solid #edf0f4;
+  color: #34465b;
+  font-size: 12px;
+}
+
+.bike-table td small {
+  display: block;
+  margin-top: 5px;
+  color: #7d8998;
+}
+
+.bike-actions {
+  display: flex;
+  gap: 8px;
+}
+
+.bike-edit-button,
+.bike-delete-button {
+  padding: 7px 10px;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+  font-size: 11px;
+}
+
+.bike-edit-button {
+  color: #245b8b;
+  background: #eaf2fb;
+}
+
+.bike-delete-button {
+  color: #b42318;
+  background: #fff0ee;
+}
+
+.bike-empty {
+  color: #8491a1;
+  text-align: center;
+  padding: 35px 10px;
+  font-size: 13px;
+}
+
+@media (max-width: 700px) {
+  .bikes-main {
+    padding: 18px;
+  }
+
+  .bikes-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+
+  .bike-form-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .bike-form-grid .full-width {
+    grid-column: auto;
+  }
+}
