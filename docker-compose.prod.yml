@@ -48,20 +48,65 @@
 #   bikeledger-network:
 #     driver: bridge
 
+# services:
+#   server:
+#     build:
+#       context: ./server
+#       dockerfile: Dockerfile
+#     image: shanumukh/bikeledger-backend:latest
+#     container_name: bikeledger-server
+
+#     env_file:
+#       - ./server/.env
+
+#     environment:
+#       PORT: 5000
+#       CLIENT_URL: http://15.134.65.78
+
+#     expose:
+#       - "5000"
+
+#     restart: unless-stopped
+
+#     networks:
+#       - bikeledger-network
+
+#   client:
+#     build:
+#       context: ./client
+#       dockerfile: Dockerfile.prod
+#       args:
+#         VITE_API_URL: /api
+
+#     image: shanumukh/bikeledger-frontend:latest
+#     container_name: bikeledger-client
+
+#     ports:
+#       - "80:80"
+
+#     depends_on:
+#       - server
+
+#     restart: unless-stopped
+
+#     networks:
+#       - bikeledger-network
+
+# networks:
+#   bikeledger-network:
+#     driver: bridge
+
 services:
   server:
-    build:
-      context: ./server
-      dockerfile: Dockerfile
-    image: shanumukh/bikeledger-backend:latest
-    container_name: bikeledger-server
+    image: shanumukh/bikeledger-backend:${IMAGE_TAG:-latest}
+    container_name: bikeledger-docker-server
 
     env_file:
-      - ./server/.env
+      - .env
 
     environment:
       PORT: 5000
-      CLIENT_URL: http://15.134.65.78
+      CLIENT_URL: http://15.134.65.78:8080
 
     expose:
       - "5000"
@@ -72,17 +117,11 @@ services:
       - bikeledger-network
 
   client:
-    build:
-      context: ./client
-      dockerfile: Dockerfile.prod
-      args:
-        VITE_API_URL: /api
-
-    image: shanumukh/bikeledger-frontend:latest
-    container_name: bikeledger-client
+    image: shanumukh/bikeledger-frontend:${IMAGE_TAG:-latest}
+    container_name: bikeledger-docker-client
 
     ports:
-      - "80:80"
+      - "8080:80"
 
     depends_on:
       - server
