@@ -1,5 +1,4 @@
 
-
 pipeline {
     agent any
 
@@ -13,10 +12,17 @@ pipeline {
 
         BACKEND_IMAGE = 'shanumukh/bikeledger-backend'
         FRONTEND_IMAGE = 'shanumukh/bikeledger-frontend'
+
+        EC2_HOST = '15.134.65.78'
+        EC2_USER = 'ec2-user'
+        EC2_DOCKER_DIR = '/home/ec2-user/BikeLedger-Docker'
+
+        SSH_CREDENTIAL = 'bikeledger-ec2-ssh'
     }
 
     stages {
 
+        // 1. CHECKOUT
         stage('Checkout') {
             steps {
                 echo 'Checking out BikeLedger source...'
@@ -24,6 +30,7 @@ pipeline {
             }
         }
 
+        // 2. VALIDATE CONFIGURATION
         stage('Validate Docker Configuration') {
             steps {
                 bat 'docker version'
@@ -32,9 +39,11 @@ pipeline {
                 bat 'if not exist server\\Dockerfile exit /b 1'
                 bat 'if not exist client\\Dockerfile.prod exit /b 1'
                 bat 'if not exist client\\nginx.conf exit /b 1'
+                bat 'if not exist docker-compose.prod.yml exit /b 1'
             }
         }
 
+        // 3. BUILD BACKEND
         stage('Build Backend Image') {
             steps {
                 bat '''
@@ -46,6 +55,7 @@ pipeline {
             }
         }
 
+        // 4. BUILD FRONTEND
         stage('Build Frontend Image') {
             steps {
                 bat '''
@@ -58,6 +68,7 @@ pipeline {
             }
         }
 
+        // 5. DOCKER HUB LOGIN
         stage('Login to Docker Hub') {
             steps {
                 withCredentials([
@@ -74,6 +85,7 @@ pipeline {
             }
         }
 
+        // 6. PUSH BACKEND
         stage('Push Backend Image') {
             steps {
                 bat 'docker push %BACKEND_IMAGE%:latest'
@@ -81,6 +93,7 @@ pipeline {
             }
         }
 
+        // 7. PUSH FRONTEND
         stage('Push Frontend Image') {
             steps {
                 bat 'docker push %FRONTEND_IMAGE%:latest'
@@ -88,27 +101,101 @@ pipeline {
             }
         }
 
+        // 8. VERIFY PUBLISHED IMAGES
         stage('Verify Published Images') {
             steps {
                 bat 'docker image inspect %BACKEND_IMAGE%:latest'
                 bat 'docker image inspect %FRONTEND_IMAGE%:latest'
 
-                echo 'Both BikeLedger images were pushed successfully.'
+                echo 'Both BikeLedger images were published successfully.'
+            }
+        }
+
+        // 9. DEPLOY TO AWS EC2
+        stage('Deploy Docker Containers to AWS EC2') {
+            steps {
+                echo 'Starting Docker deployment on AWS EC2...'
+
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIAL}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    bat '''
+                        echo Configuring SSH key permissions...
+
+                        icacls "%SSH_KEY%" /inheritance:r
+                        if errorlevel 1 exit /b 1
+
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
+                        if errorlevel 1 exit /b 1
+
+                        echo Preparing EC2 deployment directory...
+
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "mkdir -p %EC2_DOCKER_DIR%"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Transferring Docker Compose configuration...
+
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes docker-compose.prod.yml %SSH_USER%@%EC2_HOST%:%EC2_DOCKER_DIR%/docker-compose.prod.yml
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Pulling new Docker images and deploying...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d --force-recreate && docker compose -f docker-compose.prod.yml ps"
+
+                        if errorlevel 1 exit /b 1
+                    '''
+                }
+            }
+        }
+
+        // 10. VERIFY EC2 DEPLOYMENT
+        stage('Verify AWS Deployment') {
+            steps {
+                withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: "${SSH_CREDENTIAL}",
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    )
+                ]) {
+                    bat '''
+                        icacls "%SSH_KEY%" /inheritance:r
+                        if errorlevel 1 exit /b 1
+
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
+                        if errorlevel 1 exit /b 1
+
+                        echo Checking deployed frontend...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "curl -fsS http://localhost:8080/ -o /dev/null && echo FRONTEND_OK && docker ps"
+                        
+                        if errorlevel 1 exit /b 1
+                    '''
+                }
             }
         }
     }
 
     post {
         success {
-            echo 'SUCCESS: BikeLedger Docker images built and pushed!'
+            echo 'SUCCESS: BikeLedger Docker CI/CD completed!'
+            echo 'Docker images built and pushed successfully.'
+            echo 'Application: http://15.134.65.78:8080'
         }
 
         failure {
-            echo 'FAILED: Check the first failed stage in Console Output.'
+            echo 'FAILED: BikeLedger Docker CI/CD pipeline failed.'
+            echo 'Check the first failed stage in Console Output.'
         }
 
         always {
-            echo 'Docker CI pipeline finished.'
+            echo 'BikeLedger Docker CI/CD Pipeline execution finished.'
         }
     }
 }
