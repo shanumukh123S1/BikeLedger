@@ -1,0 +1,49 @@
+
+services:
+
+  server:
+    build:
+      context: ./server
+      dockerfile: Dockerfile
+    image: bikeledger-backend:latest
+    container_name: bikeledger-server
+
+    env_file:
+      - ./server/.env
+
+    environment:
+      PORT: 5000
+      CLIENT_URL: http://15.134.65.78
+
+    expose:
+      - "5000"
+
+    restart: unless-stopped
+
+    networks:
+      - bikeledger-network
+
+  client:
+    build:
+      context: ./client
+      dockerfile: Dockerfile
+      args:
+        VITE_API_URL: /api
+
+    image: bikeledger-frontend:latest
+    container_name: bikeledger-client
+
+    ports:
+      - "80:80"
+
+    depends_on:
+      - server
+
+    restart: unless-stopped
+
+    networks:
+      - bikeledger-network
+
+networks:
+  bikeledger-network:
+    driver: bridge
