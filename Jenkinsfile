@@ -119,7 +119,7 @@ pipeline {
             }
         }
 
-        // 4. FRONTEND BUILD
+        // 4. FRONTEND PRODUCTION BUILD
         stage('Frontend Production Build') {
             steps {
                 dir('client') {
@@ -135,7 +135,7 @@ pipeline {
         // 5. CREATE DEPLOYMENT ARCHIVES
         stage('Prepare Deployment Archives') {
             steps {
-                echo 'Creating clean deployment archives...'
+                echo 'Creating deployment archives...'
 
                 bat '''
                     if exist bikeledger-server.tar.gz del bikeledger-server.tar.gz
@@ -187,21 +187,8 @@ server {
                 )
             }
         }
-        
-        stage('Identify Jenkins Windows Account') {
-            steps {
-                bat '''
-                echo ===== WINDOWS USER =====
-                whoami
-                echo ===== USER SID =====
-                whoami /user
-                echo ===== USER ENVIRONMENT =====
-                set USER
-                '''
-            }
-        }
 
-        // 7. TEST SSH CONNECTION
+        // 7. TEST AWS SSH CONNECTION
         stage('Test AWS EC2 Connection') {
             steps {
                 withCredentials([
@@ -212,13 +199,17 @@ server {
                     )
                 ]) {
                     bat '''
+                        echo Fixing Jenkins SSH private-key permissions...
+
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new %SSH_USER%@%EC2_HOST% "whoami && hostname"
+                        echo Testing AWS EC2 connection...
+
+                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "whoami && hostname"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -240,10 +231,10 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "mkdir -p %EC2_APP_DIR%/server /tmp/bikeledger-deploy"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "mkdir -p %EC2_APP_DIR%/server /tmp/bikeledger-deploy"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -265,14 +256,14 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        scp -i "%SSH_KEY%" bikeledger-server.tar.gz %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/server.tar.gz
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes bikeledger-server.tar.gz %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/server.tar.gz
 
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "tar -xzf /tmp/bikeledger-deploy/server.tar.gz -C %EC2_APP_DIR%/server"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "tar -xzf /tmp/bikeledger-deploy/server.tar.gz -C %EC2_APP_DIR%/server"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -298,14 +289,14 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        scp -i "%SSH_KEY%" "%BACKEND_ENV%" %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/backend.env
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes "%BACKEND_ENV%" %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/backend.env
 
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "install -o ec2-user -g ec2-user -m 600 /tmp/bikeledger-deploy/backend.env %EC2_APP_DIR%/server/.env && rm -f /tmp/bikeledger-deploy/backend.env"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "install -o ec2-user -g ec2-user -m 600 /tmp/bikeledger-deploy/backend.env %EC2_APP_DIR%/server/.env && rm -f /tmp/bikeledger-deploy/backend.env"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -313,7 +304,7 @@ server {
             }
         }
 
-        // 11. INSTALL PRODUCTION DEPENDENCIES
+        // 11. INSTALL BACKEND PRODUCTION DEPENDENCIES
         stage('Install Backend Dependencies') {
             steps {
                 withCredentials([
@@ -327,10 +318,10 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "cd %EC2_APP_DIR%/server && npm ci --omit=dev"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_APP_DIR%/server && npm ci --omit=dev"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -352,14 +343,14 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        scp -i "%SSH_KEY%" bikeledger-dist.tar.gz %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/frontend.tar.gz
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes bikeledger-dist.tar.gz %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-deploy/frontend.tar.gz
 
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "sudo mkdir -p %FRONTEND_DIR% && sudo find %FRONTEND_DIR% -mindepth 1 -maxdepth 1 -exec rm -rf {} + && sudo tar -xzf /tmp/bikeledger-deploy/frontend.tar.gz -C %FRONTEND_DIR% && sudo chown -R nginx:nginx %FRONTEND_DIR%"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "sudo mkdir -p %FRONTEND_DIR% && sudo find %FRONTEND_DIR% -mindepth 1 -maxdepth 1 -exec rm -rf {} + && sudo tar -xzf /tmp/bikeledger-deploy/frontend.tar.gz -C %FRONTEND_DIR% && sudo chown -R nginx:nginx %FRONTEND_DIR%"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -381,14 +372,14 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        scp -i "%SSH_KEY%" bikeledger-nginx.conf %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-nginx.conf
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes bikeledger-nginx.conf %SSH_USER%@%EC2_HOST%:/tmp/bikeledger-nginx.conf
 
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "sudo rm -f /etc/nginx/conf.d/default.conf && sudo install -m 644 /tmp/bikeledger-nginx.conf /etc/nginx/conf.d/bikeledger.conf && sudo nginx -t && sudo systemctl enable nginx && sudo systemctl restart nginx"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "sudo rm -f /etc/nginx/conf.d/default.conf && sudo install -m 644 /tmp/bikeledger-nginx.conf /etc/nginx/conf.d/bikeledger.conf && sudo nginx -t && sudo systemctl enable nginx && sudo systemctl restart nginx"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -410,10 +401,10 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "cd %EC2_APP_DIR%/server && if pm2 describe bikeledger-api >/dev/null 2>&1; then pm2 restart bikeledger-api --update-env; else pm2 start server.js --name bikeledger-api; fi && pm2 save"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_APP_DIR%/server && if pm2 describe bikeledger-api >/dev/null 2>&1; then pm2 restart bikeledger-api --update-env; else pm2 start server.js --name bikeledger-api; fi && pm2 save"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -435,10 +426,10 @@ server {
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
 
-                        icacls "%SSH_KEY%" /grant:r "%USERNAME%:R"
+                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        ssh -i "%SSH_KEY%" %SSH_USER%@%EC2_HOST% "pm2 status && curl -fsS http://localhost/ -o /dev/null && echo FRONTEND_OK && curl -sS -o /dev/null -w 'BACKEND_HTTP_STATUS: %%{http_code}\\n' http://localhost:5000/"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "pm2 status && curl -fsS http://localhost/ -o /dev/null && echo FRONTEND_OK && curl -sS -o /dev/null -w 'BACKEND_HTTP_STATUS: %%{http_code}\\n' http://localhost:5000/"
 
                         if errorlevel 1 exit /b 1
                     '''
