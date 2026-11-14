@@ -82,7 +82,7 @@ pipeline {
         EC2_APP_DIR = '/home/ec2-user/BikeLedger'
 
         SSH_CREDENTIAL = 'bikeledger-ec2-ssh'
-        ENV_CREDENTIAL = 'bikeledger-backend-env'
+        ENV_CREDENTIAL = 'bikeledger-env'
 
         FRONTEND_DIR = '/usr/share/nginx/html'
     }
