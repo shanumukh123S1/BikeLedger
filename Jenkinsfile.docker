@@ -1,1 +1,114 @@
 
+
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        DOCKERHUB_USER = 'shanumukh'
+
+        BACKEND_IMAGE = 'shanumukh/bikeledger-backend'
+        FRONTEND_IMAGE = 'shanumukh/bikeledger-frontend'
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                echo 'Checking out BikeLedger source...'
+                checkout scm
+            }
+        }
+
+        stage('Validate Docker Configuration') {
+            steps {
+                bat 'docker version'
+                bat 'docker compose version'
+
+                bat 'if not exist server\\Dockerfile exit /b 1'
+                bat 'if not exist client\\Dockerfile.prod exit /b 1'
+                bat 'if not exist client\\nginx.conf exit /b 1'
+            }
+        }
+
+        stage('Build Backend Image') {
+            steps {
+                bat '''
+                    docker build ^
+                    -t %BACKEND_IMAGE%:latest ^
+                    -t %BACKEND_IMAGE%:%BUILD_NUMBER% ^
+                    -f server/Dockerfile server
+                '''
+            }
+        }
+
+        stage('Build Frontend Image') {
+            steps {
+                bat '''
+                    docker build ^
+                    --build-arg VITE_API_URL=/api ^
+                    -t %FRONTEND_IMAGE%:latest ^
+                    -t %FRONTEND_IMAGE%:%BUILD_NUMBER% ^
+                    -f client/Dockerfile.prod client
+                '''
+            }
+        }
+
+        stage('Login to Docker Hub') {
+            steps {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'dockerhub-credentials',
+                        usernameVariable: 'DH_USER',
+                        passwordVariable: 'DH_TOKEN'
+                    )
+                ]) {
+                    bat '''
+                        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$env:DH_TOKEN | docker login --username $env:DH_USER --password-stdin; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
+                    '''
+                }
+            }
+        }
+
+        stage('Push Backend Image') {
+            steps {
+                bat 'docker push %BACKEND_IMAGE%:latest'
+                bat 'docker push %BACKEND_IMAGE%:%BUILD_NUMBER%'
+            }
+        }
+
+        stage('Push Frontend Image') {
+            steps {
+                bat 'docker push %FRONTEND_IMAGE%:latest'
+                bat 'docker push %FRONTEND_IMAGE%:%BUILD_NUMBER%'
+            }
+        }
+
+        stage('Verify Published Images') {
+            steps {
+                bat 'docker image inspect %BACKEND_IMAGE%:latest'
+                bat 'docker image inspect %FRONTEND_IMAGE%:latest'
+
+                echo 'Both BikeLedger images were pushed successfully.'
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'SUCCESS: BikeLedger Docker images built and pushed!'
+        }
+
+        failure {
+            echo 'FAILED: Check the first failed stage in Console Output.'
+        }
+
+        always {
+            echo 'Docker CI pipeline finished.'
+        }
+    }
+}
