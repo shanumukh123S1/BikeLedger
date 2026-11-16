@@ -25,6 +25,10 @@ pipeline {
             }
         }
 
+        // ==========================================
+        // 1. PREPARE LINUX-COMPATIBLE ZIP
+        // ==========================================
+
         stage('Prepare Deployment Package') {
             steps {
                 powershell '''
@@ -54,24 +58,69 @@ pipeline {
                         throw "Robocopy failed with exit code $copyExitCode"
                     }
 
-                    Write-Host "Robocopy completed successfully. Exit code: $copyExitCode"
+                    Write-Host "Source files copied successfully. Robocopy exit code: $copyExitCode"
 
                     $global:LASTEXITCODE = 0
 
-                    Compress-Archive -Path "$stage\\*" `
-                        -DestinationPath $zip -Force
+                    # Create ZIP with Linux-compatible forward-slash paths.
+                    Add-Type -AssemblyName System.IO.Compression
+                    Add-Type -AssemblyName System.IO.Compression.FileSystem
+
+                    $fileStream = [System.IO.File]::Open(
+                        $zip,
+                        [System.IO.FileMode]::Create
+                    )
+
+                    try {
+                        $archive = New-Object System.IO.Compression.ZipArchive(
+                            $fileStream,
+                            [System.IO.Compression.ZipArchiveMode]::Create
+                        )
+
+                        try {
+                            Get-ChildItem -LiteralPath $stage -File -Recurse |
+                                ForEach-Object {
+
+                                    $relativePath = $_.FullName.Substring(
+                                        $stage.Length
+                                    ).TrimStart('\','/')
+
+                                    $entryName = $relativePath.Replace('\','/')
+
+                                    [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
+                                        $archive,
+                                        $_.FullName,
+                                        $entryName
+                                    ) | Out-Null
+                                }
+                        }
+                        finally {
+                            $archive.Dispose()
+                        }
+                    }
+                    finally {
+                        $fileStream.Dispose()
+                    }
 
                     if (!(Test-Path $zip)) {
                         throw "Deployment ZIP was not created."
                     }
 
-                    Write-Host "Deployment package created successfully."
+                    if ((Get-Item $zip).Length -eq 0) {
+                        throw "Deployment ZIP is empty."
+                    }
+
+                    Write-Host "Linux-compatible deployment ZIP created successfully."
 
                     $global:LASTEXITCODE = 0
                     exit 0
                 '''
             }
         }
+
+        // ==========================================
+        // 2. DEPLOY TO AWS EC2
+        // ==========================================
 
         stage('Deploy to AWS EC2') {
             steps {
@@ -86,6 +135,7 @@ pipeline {
                         variable: 'ENV_FILE'
                     )
                 ]) {
+
                     powershell '''
                         $ErrorActionPreference = "Stop"
 
@@ -145,7 +195,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 4. VERIFY ROOT DOCKER AUTHENTICATION
+                        # 4. VERIFY DOCKER AUTHENTICATION
                         # ==========================================
 
                         Write-Host "Checking existing EC2 Docker Hub authentication..."
@@ -154,7 +204,7 @@ pipeline {
                             "sudo -n test -s /root/.docker/config.json"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub authentication is not configured for EC2 root. Log in using sudo docker login on EC2 first."
+                            throw "Docker Hub authentication is not configured for EC2 root."
                         }
 
                         Write-Host "Existing EC2 Docker authentication found."
@@ -166,10 +216,10 @@ pipeline {
                         Write-Host "Preparing EC2 directories..."
 
                         & ssh @sshOptions $remote `
-                            "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)'"
+                            "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)' && find '$buildDir' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Could not prepare EC2 directories."
+                            throw "Could not prepare EC2 build directory."
                         }
 
                         # ==========================================
@@ -200,7 +250,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 8. TRANSFER JENKINS ENV SECRET FILE
+                        # 8. TRANSFER ENVIRONMENT FILE
                         # ==========================================
 
                         Write-Host "Transferring environment file..."
@@ -213,24 +263,52 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 9. CREATE LINUX EXTRACTION SCRIPT
+                        # 9. CREATE EXTRACTION SCRIPT
                         # ==========================================
 
                         Write-Host "Creating Linux extraction script..."
 
                         $extractScript = @'
 #!/bin/bash
-set -e
+set -euo pipefail
 
 BUILD_TAG="__BUILD_TAG__"
 BUILD_DIR="__BUILD_DIR__"
 DEPLOY_DIR="__DEPLOY_DIR__"
 
-echo "Extracting BikeLedger source..."
+ZIP_FILE="/tmp/bikeledger-$BUILD_TAG.zip"
 
-python3 -m zipfile -e "/tmp/bikeledger-$BUILD_TAG.zip" "$BUILD_DIR"
+echo "===================================="
+echo "EXTRACTING BIKELEDGER SOURCE"
+echo "===================================="
 
-rm -f "/tmp/bikeledger-$BUILD_TAG.zip"
+mkdir -p "$BUILD_DIR"
+
+python3 -m zipfile -e "$ZIP_FILE" "$BUILD_DIR"
+
+if [ ! -d "$BUILD_DIR/server" ]; then
+    echo "ERROR: Backend server directory not found."
+    exit 1
+fi
+
+if [ ! -d "$BUILD_DIR/client" ]; then
+    echo "ERROR: Frontend client directory not found."
+    exit 1
+fi
+
+if [ ! -f "$BUILD_DIR/server/Dockerfile" ]; then
+    echo "ERROR: Backend Dockerfile not found."
+    exit 1
+fi
+
+if [ ! -f "$BUILD_DIR/client/Dockerfile.prod" ]; then
+    echo "ERROR: Frontend Dockerfile.prod not found."
+    exit 1
+fi
+
+echo "Backend and frontend directories verified."
+
+rm -f "$ZIP_FILE"
 
 echo "Securing environment file..."
 
@@ -258,7 +336,7 @@ echo "Source extraction completed successfully."
                         )
 
                         # ==========================================
-                        # 10. TRANSFER AND EXECUTE EXTRACTION SCRIPT
+                        # 10. TRANSFER AND EXECUTE EXTRACTION
                         # ==========================================
 
                         Write-Host "Transferring extraction script..."
@@ -295,6 +373,15 @@ DEPLOY_DIR="__DEPLOY_DIR__"
 
 BACKEND="shanumukh/bikeledger-backend"
 FRONTEND="shanumukh/bikeledger-frontend"
+
+echo "===================================="
+echo "VERIFYING SOURCE DIRECTORIES"
+echo "===================================="
+
+test -f "$BUILD_DIR/server/Dockerfile"
+test -f "$BUILD_DIR/client/Dockerfile.prod"
+
+echo "Source directories verified."
 
 echo "===================================="
 echo "BUILDING BIKELEDGER BACKEND"
@@ -359,7 +446,7 @@ echo "===================================="
 sudo docker logs --tail 30 bikeledger-docker-server
 
 echo "===================================="
-echo "DEPLOYMENT COMPLETED"
+echo "DEPLOYMENT COMPLETED SUCCESSFULLY"
 echo "===================================="
 '@
 
