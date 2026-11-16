@@ -81,11 +81,6 @@ pipeline {
                         keyFileVariable: 'SSH_KEY',
                         usernameVariable: 'SSH_USER'
                     ),
-                    usernamePassword(
-                        credentialsId: 'dockerhub-credentials',
-                        usernameVariable: 'DH_USER',
-                        passwordVariable: 'DH_TOKEN'
-                    ),
                     file(
                         credentialsId: 'bikeledger-env',
                         variable: 'ENV_FILE'
@@ -150,7 +145,22 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 4. PREPARE EC2 DIRECTORIES
+                        # 4. VERIFY ROOT DOCKER AUTHENTICATION
+                        # ==========================================
+
+                        Write-Host "Checking existing EC2 Docker Hub authentication..."
+
+                        & ssh @sshOptions $remote `
+                            "sudo -n test -s /root/.docker/config.json"
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker Hub authentication is not configured for EC2 root. Log in using sudo docker login on EC2 first."
+                        }
+
+                        Write-Host "Existing EC2 Docker authentication found."
+
+                        # ==========================================
+                        # 5. PREPARE EC2 DIRECTORIES
                         # ==========================================
 
                         Write-Host "Preparing EC2 directories..."
@@ -163,7 +173,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 5. TRANSFER SOURCE ZIP
+                        # 6. TRANSFER SOURCE ZIP
                         # ==========================================
 
                         Write-Host "Transferring source package..."
@@ -176,7 +186,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 6. TRANSFER DOCKER COMPOSE FILE
+                        # 7. TRANSFER DOCKER COMPOSE FILE
                         # ==========================================
 
                         Write-Host "Transferring Compose file..."
@@ -190,7 +200,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 7. TRANSFER JENKINS ENV SECRET FILE
+                        # 8. TRANSFER JENKINS ENV SECRET FILE
                         # ==========================================
 
                         Write-Host "Transferring environment file..."
@@ -203,7 +213,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 8. CREATE LINUX EXTRACTION SCRIPT
+                        # 9. CREATE LINUX EXTRACTION SCRIPT
                         # ==========================================
 
                         Write-Host "Creating Linux extraction script..."
@@ -237,7 +247,6 @@ echo "Source extraction completed successfully."
                             "__DEPLOY_DIR__", $env:DEPLOY_DIR
                         )
 
-                        # Convert to Linux LF and ASCII without BOM.
                         $extractScript = $extractScript -replace "`r`n", "`n"
 
                         $extractPath = Join-Path $env:WORKSPACE "ec2-extract.sh"
@@ -249,7 +258,7 @@ echo "Source extraction completed successfully."
                         )
 
                         # ==========================================
-                        # 9. TRANSFER AND EXECUTE EXTRACTION SCRIPT
+                        # 10. TRANSFER AND EXECUTE EXTRACTION SCRIPT
                         # ==========================================
 
                         Write-Host "Transferring extraction script..."
@@ -271,19 +280,6 @@ echo "Source extraction completed successfully."
                         }
 
                         Write-Host "Source extraction completed successfully."
-
-                        # ==========================================
-                        # 10. DOCKER HUB LOGIN ON EC2
-                        # ==========================================
-
-                        Write-Host "Logging in to Docker Hub on EC2..."
-
-                        $env:DH_TOKEN | ssh @sshOptions $remote `
-                            "sudo -n docker login --username $env:DH_USER --password-stdin"
-
-                        if ($LASTEXITCODE -ne 0) {
-                            throw "Docker Hub login failed on EC2."
-                        }
 
                         # ==========================================
                         # 11. CREATE REMOTE DEPLOYMENT SCRIPT
@@ -375,12 +371,10 @@ echo "===================================="
                             "__DEPLOY_DIR__", $env:DEPLOY_DIR
                         )
 
-                        # Convert Windows CRLF to Linux LF.
                         $remoteScript = $remoteScript -replace "`r`n", "`n"
 
                         $scriptPath = Join-Path $env:WORKSPACE "ec2-deploy.sh"
 
-                        # Save as ASCII without BOM.
                         [System.IO.File]::WriteAllText(
                             $scriptPath,
                             $remoteScript,
