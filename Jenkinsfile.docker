@@ -44,19 +44,34 @@ pipeline {
                     New-Item -ItemType Directory -Path $stage | Out-Null
 
                     robocopy $env:WORKSPACE $stage /E `
-                        /XD .git node_modules deployment-package `
-                            dist build `
-                        /XF .env .env.local .env.production `
-                        bikeledger-deploy.zip
+                        /XD .git node_modules deployment-package dist build `
+                        /XF .env .env.local .env.production bikeledger-deploy.zip `
+                        /NFL /NDL /NJH /NJS
 
-                    if ($LASTEXITCODE -ge 8) {
-                        throw "Failed to prepare deployment package."
+                    $copyExitCode = $LASTEXITCODE
+
+                    if ($copyExitCode -ge 8) {
+                        throw "Robocopy failed with exit code $copyExitCode"
                     }
+
+                    Write-Host "Robocopy completed successfully. Exit code: $copyExitCode"
+
+                    # Robocopy codes 0-7 indicate success.
+                    # Reset native exit code before continuing.
+                    $global:LASTEXITCODE = 0
 
                     Compress-Archive -Path "$stage\\*" `
                         -DestinationPath $zip -Force
 
-                    Write-Host "Deployment package created."
+                    if (!(Test-Path $zip)) {
+                        throw "Deployment ZIP was not created."
+                    }
+
+                    Write-Host "Deployment package created successfully."
+
+                    # Ensure Jenkins receives a successful exit code.
+                    $global:LASTEXITCODE = 0
+                    exit 0
                 '''
             }
         }
@@ -91,9 +106,10 @@ pipeline {
                         )
 
                         $remote = "$($env:SSH_USER)@$($env:EC2_HOST)"
-
-                        # Create an isolated build directory on EC2.
                         $buildDir = "/home/ec2-user/ci-builds/BikeLedger-$tag"
+
+                        # 1. Prepare EC2 directories.
+                        Write-Host "Preparing EC2 directories..."
 
                         & ssh @sshOptions $remote `
                             "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)'"
@@ -102,7 +118,9 @@ pipeline {
                             throw "Could not prepare EC2 directories."
                         }
 
-                        # Transfer source package.
+                        # 2. Transfer source ZIP.
+                        Write-Host "Transferring source package..."
+
                         & scp @sshOptions $zip `
                             "${remote}:/tmp/bikeledger-$tag.zip"
 
@@ -110,7 +128,9 @@ pipeline {
                             throw "Source package transfer failed."
                         }
 
-                        # Transfer production Compose file.
+                        # 3. Transfer Docker Compose file.
+                        Write-Host "Transferring Compose file..."
+
                         & scp @sshOptions `
                             "$env:WORKSPACE\\docker-compose.prod.yml" `
                             "${remote}:$($env:DEPLOY_DIR)/docker-compose.prod.yml"
@@ -119,7 +139,9 @@ pipeline {
                             throw "Compose file transfer failed."
                         }
 
-                        # Transfer Jenkins Secret File (.env).
+                        # 4. Transfer Jenkins environment Secret File.
+                        Write-Host "Transferring environment file..."
+
                         & scp @sshOptions $env:ENV_FILE `
                             "${remote}:$($env:DEPLOY_DIR)/.env"
 
@@ -127,7 +149,9 @@ pipeline {
                             throw "Environment file transfer failed."
                         }
 
-                        # Extract source and protect the environment file.
+                        # 5. Extract source and secure .env.
+                        Write-Host "Extracting source on EC2..."
+
                         $extractCommand = @"
 set -e
 python3 -m zipfile -e /tmp/bikeledger-$tag.zip '$buildDir'
@@ -141,16 +165,17 @@ chmod 600 '$($env:DEPLOY_DIR)/.env'
                             throw "EC2 source extraction failed."
                         }
 
-                        # Docker Hub login on EC2.
-                        # The token is passed through stdin, not as a command argument.
+                        # 6. Authenticate Docker Hub on EC2.
+                        Write-Host "Logging in to Docker Hub on EC2..."
+
                         $env:DH_TOKEN | ssh @sshOptions $remote `
-                            "sudo docker login --username $env:DH_USER --password-stdin"
+                            "sudo -n docker login --username $env:DH_USER --password-stdin"
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Docker Hub login failed on EC2."
                         }
 
-                        # Create the remote deployment script.
+                        # 7. Prepare remote deployment script.
                         $remoteScript = @'
 #!/bin/bash
 set -euo pipefail
@@ -162,14 +187,20 @@ DEPLOY_DIR="__DEPLOY_DIR__"
 BACKEND="shanumukh/bikeledger-backend"
 FRONTEND="shanumukh/bikeledger-frontend"
 
-echo "Building backend on EC2..."
+echo "===================================="
+echo "BUILDING BIKELEDGER BACKEND"
+echo "===================================="
+
 sudo docker build \
   -t "$BACKEND:$BUILD_TAG" \
   -t "$BACKEND:latest" \
   -f "$BUILD_DIR/server/Dockerfile" \
   "$BUILD_DIR/server"
 
-echo "Building frontend on EC2..."
+echo "===================================="
+echo "BUILDING BIKELEDGER FRONTEND"
+echo "===================================="
+
 sudo docker build \
   --build-arg VITE_API_URL=/api \
   -t "$FRONTEND:$BUILD_TAG" \
@@ -177,32 +208,50 @@ sudo docker build \
   -f "$BUILD_DIR/client/Dockerfile.prod" \
   "$BUILD_DIR/client"
 
-echo "Pushing images to Docker Hub..."
+echo "===================================="
+echo "PUSHING IMAGES TO DOCKER HUB"
+echo "===================================="
+
 sudo docker push "$BACKEND:$BUILD_TAG"
 sudo docker push "$BACKEND:latest"
+
 sudo docker push "$FRONTEND:$BUILD_TAG"
 sudo docker push "$FRONTEND:latest"
 
-echo "Validating deployment configuration..."
+echo "===================================="
+echo "VALIDATING DOCKER COMPOSE"
+echo "===================================="
+
 cd "$DEPLOY_DIR"
 
 sudo docker compose \
   --env-file .env \
   -f docker-compose.prod.yml config -q
 
-echo "Starting BikeLedger containers..."
+echo "===================================="
+echo "DEPLOYING BIKELEDGER"
+echo "===================================="
+
 sudo env IMAGE_TAG="$BUILD_TAG" docker compose \
   --env-file .env \
   -f docker-compose.prod.yml \
   up -d --force-recreate
 
-echo "Container status:"
+echo "===================================="
+echo "CONTAINER STATUS"
+echo "===================================="
+
 sudo docker ps --filter "name=bikeledger-docker"
 
-echo "Backend logs:"
+echo "===================================="
+echo "BACKEND LOGS"
+echo "===================================="
+
 sudo docker logs --tail 30 bikeledger-docker-server
 
-echo "Deployment completed."
+echo "===================================="
+echo "DEPLOYMENT COMPLETED"
+echo "===================================="
 '@
 
                         $remoteScript = $remoteScript.Replace(
@@ -218,6 +267,9 @@ echo "Deployment completed."
                         Set-Content -Path $scriptPath `
                             -Value $remoteScript -Encoding ascii
 
+                        # 8. Transfer deployment script.
+                        Write-Host "Transferring deployment script..."
+
                         & scp @sshOptions $scriptPath `
                             "${remote}:/tmp/bikeledger-deploy-$tag.sh"
 
@@ -225,14 +277,17 @@ echo "Deployment completed."
                             throw "Deployment script transfer failed."
                         }
 
-                        ssh @sshOptions $remote `
+                        # 9. Execute deployment on EC2.
+                        Write-Host "Starting deployment on EC2..."
+
+                        & ssh @sshOptions $remote `
                             "bash /tmp/bikeledger-deploy-$tag.sh"
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "EC2 deployment failed."
                         }
 
-                        Write-Host "BikeLedger deployment completed."
+                        Write-Host "BikeLedger deployment completed successfully."
                     '''
                 }
             }
