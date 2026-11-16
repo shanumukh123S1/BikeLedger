@@ -8,229 +8,231 @@ pipeline {
     }
 
     environment {
+        EC2_HOST = '15.134.65.78'
+        DEPLOY_DIR = '/home/ec2-user/BikeLedger-Docker'
         DOCKERHUB_USER = 'shanumukh'
 
         BACKEND_IMAGE = 'shanumukh/bikeledger-backend'
         FRONTEND_IMAGE = 'shanumukh/bikeledger-frontend'
-
-        EC2_HOST = '15.134.65.78'
-        EC2_DOCKER_DIR = '/home/ec2-user/BikeLedger-Docker'
-
-        SSH_CREDENTIAL = 'bikeledger-ec2-ssh'
-        ENV_CREDENTIAL = 'bikeledger-env'
-        DOCKER_CREDENTIAL = 'dockerhub-credentials'
     }
 
     stages {
 
-        // 1. CHECKOUT
         stage('Checkout') {
             steps {
-                echo 'Checking out BikeLedger source...'
                 checkout scm
+                echo 'Source code checked out successfully.'
             }
         }
 
-        // 2. VALIDATE CONFIGURATION
-        stage('Validate Docker Configuration') {
+        stage('Prepare Deployment Package') {
             steps {
-                bat 'docker version'
-                bat 'docker compose version'
+                powershell '''
+                    $ErrorActionPreference = "Stop"
 
-                bat 'if not exist server\\Dockerfile exit /b 1'
-                bat 'if not exist client\\Dockerfile.prod exit /b 1'
-                bat 'if not exist client\\nginx.conf exit /b 1'
-                bat 'if not exist docker-compose.prod.yml exit /b 1'
+                    $stage = Join-Path $env:WORKSPACE "deployment-package"
+                    $zip = Join-Path $env:WORKSPACE "bikeledger-deploy.zip"
 
-                echo 'Docker configuration validated.'
-            }
-        }
+                    if (Test-Path $stage) {
+                        Remove-Item $stage -Recurse -Force
+                    }
 
-        // 3. BUILD BACKEND
-        stage('Build Backend Image') {
-            steps {
-                bat '''
-                    docker build ^
-                    -t %BACKEND_IMAGE%:latest ^
-                    -t %BACKEND_IMAGE%:%BUILD_NUMBER% ^
-                    -f server/Dockerfile server
+                    if (Test-Path $zip) {
+                        Remove-Item $zip -Force
+                    }
+
+                    New-Item -ItemType Directory -Path $stage | Out-Null
+
+                    robocopy $env:WORKSPACE $stage /E `
+                        /XD .git node_modules deployment-package `
+                            dist build `
+                        /XF .env .env.local .env.production `
+                        bikeledger-deploy.zip
+
+                    if ($LASTEXITCODE -ge 8) {
+                        throw "Failed to prepare deployment package."
+                    }
+
+                    Compress-Archive -Path "$stage\\*" `
+                        -DestinationPath $zip -Force
+
+                    Write-Host "Deployment package created."
                 '''
             }
         }
 
-        // 4. BUILD FRONTEND
-        stage('Build Frontend Image') {
-            steps {
-                bat '''
-                    docker build ^
-                    --build-arg VITE_API_URL=/api ^
-                    -t %FRONTEND_IMAGE%:latest ^
-                    -t %FRONTEND_IMAGE%:%BUILD_NUMBER% ^
-                    -f client/Dockerfile.prod client
-                '''
-            }
-        }
-
-        // 5. DOCKER HUB LOGIN
-        stage('Login to Docker Hub') {
+        stage('Deploy to AWS EC2') {
             steps {
                 withCredentials([
+                    sshUserPrivateKey(
+                        credentialsId: 'bikeledger-ec2-ssh',
+                        keyFileVariable: 'SSH_KEY',
+                        usernameVariable: 'SSH_USER'
+                    ),
                     usernamePassword(
                         credentialsId: 'dockerhub-credentials',
                         usernameVariable: 'DH_USER',
                         passwordVariable: 'DH_TOKEN'
-                    )
-                ]) {
-                    bat '''
-                        powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command "$env:DH_TOKEN | docker login --username $env:DH_USER --password-stdin; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }"
-                    '''
-                }
-            }
-        }
-
-        // 6. PUSH BACKEND
-        stage('Push Backend Image') {
-            steps {
-                bat 'docker push %BACKEND_IMAGE%:latest'
-                bat 'docker push %BACKEND_IMAGE%:%BUILD_NUMBER%'
-            }
-        }
-
-        // 7. PUSH FRONTEND
-        stage('Push Frontend Image') {
-            steps {
-                bat 'docker push %FRONTEND_IMAGE%:latest'
-                bat 'docker push %FRONTEND_IMAGE%:%BUILD_NUMBER%'
-            }
-        }
-
-        // 8. VERIFY PUBLISHED IMAGES
-        stage('Verify Published Images') {
-            steps {
-                bat 'docker image inspect %BACKEND_IMAGE%:%BUILD_NUMBER%'
-                bat 'docker image inspect %FRONTEND_IMAGE%:%BUILD_NUMBER%'
-
-                echo 'Both BikeLedger images published successfully.'
-            }
-        }
-
-        // 9. DEPLOY TO AWS EC2
-        stage('Deploy Docker Containers to AWS EC2') {
-            steps {
-                echo 'Starting BikeLedger AWS deployment...'
-
-                withCredentials([
+                    ),
                     file(
                         credentialsId: 'bikeledger-env',
                         variable: 'ENV_FILE'
-                    ),
-                    sshUserPrivateKey(
-                        credentialsId: 'bikeledger-ec2-ssh',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
                     )
                 ]) {
+                    powershell '''
+                        $ErrorActionPreference = "Stop"
 
-                    bat '''
-                        echo Configuring SSH key permissions...
+                        $zip = Join-Path $env:WORKSPACE "bikeledger-deploy.zip"
+                        $tag = $env:BUILD_NUMBER
 
-                        icacls "%SSH_KEY%" /inheritance:r
-                        if errorlevel 1 exit /b 1
+                        $sshOptions = @(
+                            "-i", $env:SSH_KEY,
+                            "-o", "StrictHostKeyChecking=accept-new"
+                        )
 
-                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
-                        if errorlevel 1 exit /b 1
+                        $remote = "$($env:SSH_USER)@$($env:EC2_HOST)"
 
-                        echo Preparing EC2 deployment directory...
+                        # Create an isolated build directory on EC2.
+                        $buildDir = "/home/ec2-user/ci-builds/BikeLedger-$tag"
 
-                        ssh -i "%SSH_KEY%" -o StrictHostKeyChecking=accept-new -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "mkdir -p %EC2_DOCKER_DIR%"
+                        & ssh @sshOptions $remote `
+                            "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)'"
 
-                        if errorlevel 1 exit /b 1
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Could not prepare EC2 directories."
+                        }
 
-                        echo Transferring Jenkins environment file...
+                        # Transfer source package.
+                        & scp @sshOptions $zip `
+                            "${remote}:/tmp/bikeledger-$tag.zip"
 
-                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes "%ENV_FILE%" %SSH_USER%@%EC2_HOST%:%EC2_DOCKER_DIR%/.env
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Source package transfer failed."
+                        }
 
-                        if errorlevel 1 exit /b 1
+                        # Transfer production Compose file.
+                        & scp @sshOptions `
+                            "$env:WORKSPACE\\docker-compose.prod.yml" `
+                            "${remote}:$($env:DEPLOY_DIR)/docker-compose.prod.yml"
 
-                        echo Transferring Docker Compose configuration...
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Compose file transfer failed."
+                        }
 
-                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes docker-compose.prod.yml %SSH_USER%@%EC2_HOST%:%EC2_DOCKER_DIR%/docker-compose.prod.yml
+                        # Transfer Jenkins Secret File (.env).
+                        & scp @sshOptions $env:ENV_FILE `
+                            "${remote}:$($env:DEPLOY_DIR)/.env"
 
-                        if errorlevel 1 exit /b 1
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Environment file transfer failed."
+                        }
 
-                        echo Applying secure environment file permissions...
+                        # Extract source and protect the environment file.
+                        $extractCommand = @"
+set -e
+python3 -m zipfile -e /tmp/bikeledger-$tag.zip '$buildDir'
+rm -f /tmp/bikeledger-$tag.zip
+chmod 600 '$($env:DEPLOY_DIR)/.env'
+"@
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "chmod 600 %EC2_DOCKER_DIR%/.env"
+                        $extractCommand | ssh @sshOptions $remote "bash -s"
 
-                        if errorlevel 1 exit /b 1
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "EC2 source extraction failed."
+                        }
 
-                        echo Validating Docker Compose configuration...
+                        # Docker Hub login on EC2.
+                        # The token is passed through stdin, not as a command argument.
+                        $env:DH_TOKEN | ssh @sshOptions $remote `
+                            "sudo docker login --username $env:DH_USER --password-stdin"
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml config -q"
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Docker Hub login failed on EC2."
+                        }
 
-                        if errorlevel 1 exit /b 1
+                        # Create the remote deployment script.
+                        $remoteScript = @'
+#!/bin/bash
+set -euo pipefail
 
-                        echo Pulling the numbered Docker images...
+BUILD_TAG="__BUILD_TAG__"
+BUILD_DIR="__BUILD_DIR__"
+DEPLOY_DIR="__DEPLOY_DIR__"
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "docker pull %BACKEND_IMAGE%:%BUILD_NUMBER% && docker pull %FRONTEND_IMAGE%:%BUILD_NUMBER%"
+BACKEND="shanumukh/bikeledger-backend"
+FRONTEND="shanumukh/bikeledger-frontend"
 
-                        if errorlevel 1 exit /b 1
+echo "Building backend on EC2..."
+sudo docker build \
+  -t "$BACKEND:$BUILD_TAG" \
+  -t "$BACKEND:latest" \
+  -f "$BUILD_DIR/server/Dockerfile" \
+  "$BUILD_DIR/server"
 
-                        echo Deploying BikeLedger containers...
+echo "Building frontend on EC2..."
+sudo docker build \
+  --build-arg VITE_API_URL=/api \
+  -t "$FRONTEND:$BUILD_TAG" \
+  -t "$FRONTEND:latest" \
+  -f "$BUILD_DIR/client/Dockerfile.prod" \
+  "$BUILD_DIR/client"
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && IMAGE_TAG=%BUILD_NUMBER% docker compose -f docker-compose.prod.yml up -d --force-recreate"
+echo "Pushing images to Docker Hub..."
+sudo docker push "$BACKEND:$BUILD_TAG"
+sudo docker push "$BACKEND:latest"
+sudo docker push "$FRONTEND:$BUILD_TAG"
+sudo docker push "$FRONTEND:latest"
 
-                        if errorlevel 1 exit /b 1
+echo "Validating deployment configuration..."
+cd "$DEPLOY_DIR"
 
-                        echo Checking deployed containers...
+sudo docker compose \
+  --env-file .env \
+  -f docker-compose.prod.yml config -q
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml ps"
+echo "Starting BikeLedger containers..."
+sudo env IMAGE_TAG="$BUILD_TAG" docker compose \
+  --env-file .env \
+  -f docker-compose.prod.yml \
+  up -d --force-recreate
 
-                        if errorlevel 1 exit /b 1
-                    '''
-                }
-            }
-        }
+echo "Container status:"
+sudo docker ps --filter "name=bikeledger-docker"
 
-        // 10. VERIFY AWS DEPLOYMENT
-        stage('Verify AWS Deployment') {
-            steps {
-                withCredentials([
-                    sshUserPrivateKey(
-                        credentialsId: 'bikeledger-ec2-ssh',
-                        keyFileVariable: 'SSH_KEY',
-                        usernameVariable: 'SSH_USER'
-                    )
-                ]) {
+echo "Backend logs:"
+sudo docker logs --tail 30 bikeledger-docker-server
 
-                    bat '''
-                        icacls "%SSH_KEY%" /inheritance:r
-                        if errorlevel 1 exit /b 1
+echo "Deployment completed."
+'@
 
-                        icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
-                        if errorlevel 1 exit /b 1
+                        $remoteScript = $remoteScript.Replace(
+                            "__BUILD_TAG__", $tag
+                        ).Replace(
+                            "__BUILD_DIR__", $buildDir
+                        ).Replace(
+                            "__DEPLOY_DIR__", $env:DEPLOY_DIR
+                        )
 
-                        echo Checking frontend availability...
+                        $scriptPath = Join-Path $env:WORKSPACE "ec2-deploy.sh"
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "curl -fsS http://localhost:8080/ -o /dev/null && echo FRONTEND_OK"
+                        Set-Content -Path $scriptPath `
+                            -Value $remoteScript -Encoding ascii
 
-                        if errorlevel 1 exit /b 1
+                        & scp @sshOptions $scriptPath `
+                            "${remote}:/tmp/bikeledger-deploy-$tag.sh"
 
-                        echo Checking backend container state...
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Deployment script transfer failed."
+                        }
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "test $(docker inspect -f '{{.State.Running}}' bikeledger-docker-server) = true"
+                        ssh @sshOptions $remote `
+                            "bash /tmp/bikeledger-deploy-$tag.sh"
 
-                        if errorlevel 1 exit /b 1
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "EC2 deployment failed."
+                        }
 
-                        echo Checking frontend container state...
-
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "test $(docker inspect -f '{{.State.Running}}' bikeledger-docker-client) = true"
-
-                        if errorlevel 1 exit /b 1
-
-                        echo Both BikeLedger containers are running.
-
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "docker ps"
+                        Write-Host "BikeLedger deployment completed."
                     '''
                 }
             }
@@ -239,18 +241,11 @@ pipeline {
 
     post {
         success {
-            echo 'SUCCESS: BikeLedger Docker CI/CD completed!'
-            echo 'Docker images built, pushed and deployed.'
-            echo 'Application: http://15.134.65.78:8080'
+            echo 'BikeLedger CI/CD deployment successful!'
         }
 
         failure {
-            echo 'FAILED: BikeLedger Docker CI/CD pipeline failed.'
-            echo 'Check the first failed stage in Console Output.'
-        }
-
-        always {
-            echo 'BikeLedger Docker CI/CD Pipeline execution finished.'
+            echo 'BikeLedger deployment failed. Check the stage logs.'
         }
     }
 }
