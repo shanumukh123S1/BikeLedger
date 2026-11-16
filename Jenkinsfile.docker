@@ -18,6 +18,10 @@ pipeline {
 
     stages {
 
+        // ==========================================
+        // 1. CHECKOUT SOURCE CODE
+        // ==========================================
+
         stage('Checkout') {
             steps {
                 checkout scm
@@ -26,7 +30,7 @@ pipeline {
         }
 
         // ==========================================
-        // 1. PREPARE LINUX-COMPATIBLE ZIP
+        // 2. PREPARE LINUX-COMPATIBLE ZIP
         // ==========================================
 
         stage('Prepare Deployment Package') {
@@ -47,6 +51,8 @@ pipeline {
 
                     New-Item -ItemType Directory -Path $stage | Out-Null
 
+                    Write-Host "Copying project source files..."
+
                     robocopy $env:WORKSPACE $stage /E `
                         /XD .git node_modules deployment-package dist build `
                         /XF .env .env.local .env.production bikeledger-deploy.zip `
@@ -62,7 +68,10 @@ pipeline {
 
                     $global:LASTEXITCODE = 0
 
-                    # Create ZIP with Linux-compatible forward-slash paths.
+                    # ======================================
+                    # CREATE ZIP WITH FORWARD-SLASH PATHS
+                    # ======================================
+
                     Add-Type -AssemblyName System.IO.Compression
                     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
@@ -81,9 +90,11 @@ pipeline {
                             Get-ChildItem -LiteralPath $stage -File -Recurse |
                                 ForEach-Object {
 
-                                    $relativePath = $_.FullName.Substring(
-                                        $stage.Length
-                                    ).TrimStart('\','/')
+                                    $relativePath = $_.FullName.Substring($stage.Length)
+
+                                    $relativePath = $relativePath.TrimStart(
+                                        [char[]]@('\','/')
+                                    )
 
                                     $entryName = $relativePath.Replace('\','/')
 
@@ -112,14 +123,51 @@ pipeline {
 
                     Write-Host "Linux-compatible deployment ZIP created successfully."
 
+                    # Verify ZIP paths before transfer.
+                    $verifyStream = [System.IO.File]::OpenRead($zip)
+
+                    try {
+                        $verifyArchive = New-Object System.IO.Compression.ZipArchive(
+                            $verifyStream,
+                            [System.IO.Compression.ZipArchiveMode]::Read
+                        )
+
+                        try {
+                            $entries = @($verifyArchive.Entries | ForEach-Object {
+                                $_.FullName
+                            })
+
+                            if (!($entries -contains "server/Dockerfile")) {
+                                throw "ZIP verification failed: server/Dockerfile missing."
+                            }
+
+                            if (!($entries -contains "client/Dockerfile.prod")) {
+                                throw "ZIP verification failed: client/Dockerfile.prod missing."
+                            }
+
+                            Write-Host "ZIP verification successful."
+                            Write-Host "Backend Dockerfile found."
+                            Write-Host "Frontend Dockerfile found."
+                        }
+                        finally {
+                            $verifyArchive.Dispose()
+                        }
+                    }
+                    finally {
+                        $verifyStream.Dispose()
+                    }
+
                     $global:LASTEXITCODE = 0
+
+                    Write-Host "Deployment package created successfully."
+
                     exit 0
                 '''
             }
         }
 
         // ==========================================
-        // 2. DEPLOY TO AWS EC2
+        // 3. DEPLOY TO AWS EC2
         // ==========================================
 
         stage('Deploy to AWS EC2') {
@@ -215,8 +263,9 @@ pipeline {
 
                         Write-Host "Preparing EC2 directories..."
 
-                        & ssh @sshOptions $remote `
-                            "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)' && find '$buildDir' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+                        $prepareCommand = "mkdir -p '$buildDir' '$($env:DEPLOY_DIR)' && find '$buildDir' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
+
+                        & ssh @sshOptions $remote $prepareCommand
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "Could not prepare EC2 build directory."
@@ -250,7 +299,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 8. TRANSFER ENVIRONMENT FILE
+                        # 8. TRANSFER ENVIRONMENT SECRET FILE
                         # ==========================================
 
                         Write-Host "Transferring environment file..."
@@ -263,7 +312,7 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 9. CREATE EXTRACTION SCRIPT
+                        # 9. CREATE LINUX EXTRACTION SCRIPT
                         # ==========================================
 
                         Write-Host "Creating Linux extraction script..."
