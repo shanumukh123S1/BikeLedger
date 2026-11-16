@@ -29,7 +29,8 @@ const firebaseConfig = {
   projectId: "bikeledger-61867",
   storageBucket: "bikeledger-61867.firebasestorage.app",
   messagingSenderId: "282713114383",
-  appId: "1:282713114383:web:8f4f303210072cff48207a"
+  appId: "1:282713114383:web:8f4f303210072cff48207a",
+  measurementId: "G-R0CHMY4L8B"
 };
 
 const app = initializeApp(firebaseConfig);
