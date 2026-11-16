@@ -12,7 +12,6 @@ pipeline {
         REMOTE_BUILD_ROOT = '/home/ec2-user/ci-builds'
         DEPLOY_DIR        = '/home/ec2-user/BikeLedger-Docker'
 
-        DOCKERHUB_USER = 'shanumukh'
         BACKEND_IMAGE  = 'shanumukh/bikeledger-backend'
         FRONTEND_IMAGE = 'shanumukh/bikeledger-frontend'
     }
@@ -51,7 +50,7 @@ pipeline {
 
                     robocopy $workspace $stage /E `
                         /XD .git node_modules deployment-package dist build `
-                        /XF ".env" ".env.*" "BikeLedger-deployment.zip"
+                        /XF ".env" ".env.*" "BikeLedger-deployment.zip" "bikeledger-deploy.zip"
 
                     $copyCode = $LASTEXITCODE
 
@@ -61,25 +60,26 @@ pipeline {
 
                     $global:LASTEXITCODE = 0
 
-                    Write-Host "Source files copied successfully. Robocopy exit code: $copyCode"
+                    Write-Host "Source copied successfully. Robocopy code: $copyCode"
 
-                    # Validate required Dockerfiles.
-                    $backendDockerfile = Join-Path $stage "server/Dockerfile"
-                    $frontendDockerfile = Join-Path $stage "client/Dockerfile.prod"
-
-                    if (!(Test-Path $backendDockerfile)) {
-                        throw "Missing server/Dockerfile."
+                    # Validate required source files.
+                    if (!(Test-Path (Join-Path $stage "server/Dockerfile"))) {
+                        throw "server/Dockerfile is missing."
                     }
 
-                    if (!(Test-Path $frontendDockerfile)) {
-                        throw "Missing client/Dockerfile.prod."
+                    if (!(Test-Path (Join-Path $stage "client/Dockerfile.prod"))) {
+                        throw "client/Dockerfile.prod is missing."
                     }
 
-                    # Create ZIP using PowerShell 5.1 compatible paths.
+                    if (!(Test-Path (Join-Path $stage "client/nginx.conf"))) {
+                        throw "client/nginx.conf is missing."
+                    }
+
+                    # Load ZIP libraries.
                     Add-Type -AssemblyName System.IO.Compression
                     Add-Type -AssemblyName System.IO.Compression.FileSystem
 
-                    Write-Host "Creating deployment ZIP..."
+                    Write-Host "Creating Linux-compatible ZIP..."
 
                     $fileStream = [System.IO.File]::Open(
                         $zipFile,
@@ -93,20 +93,28 @@ pipeline {
                         )
 
                         try {
-                            $rootPath = $stage.TrimEnd([char[]]@('\','/')) + '\'
+                            # Use character codes to avoid Groovy escaping.
+                            $backslash = [char]92
+                            $forwardslash = [char]47
+
+                            $rootPath = $stage.TrimEnd(
+                                [char[]]@($backslash, $forwardslash)
+                            ) + $backslash
 
                             Get-ChildItem -Path $stage -Recurse -File |
                                 ForEach-Object {
 
                                     $file = $_
 
-                                    # PowerShell 5.1 compatible relative path.
                                     $relativePath = $file.FullName.Substring(
                                         $rootPath.Length
                                     )
 
                                     # ZIP paths must use forward slashes.
-                                    $entryName = $relativePath.Replace('\','/')
+                                    $entryName = $relativePath.Replace(
+                                        [string]$backslash,
+                                        [string]$forwardslash
+                                    )
 
                                     [System.IO.Compression.ZipFileExtensions]::CreateEntryFromFile(
                                         $archive,
@@ -123,8 +131,8 @@ pipeline {
                         $fileStream.Dispose()
                     }
 
-                    # Validate ZIP contents.
-                    Write-Host "Validating ZIP contents..."
+                    # Verify the archive before deployment.
+                    Write-Host "Validating ZIP entries..."
 
                     $checkArchive = [System.IO.Compression.ZipFile]::OpenRead($zipFile)
 
@@ -134,19 +142,28 @@ pipeline {
                             ForEach-Object { $_.FullName }
                         )
 
-                        if ($entries -notcontains "server/Dockerfile") {
-                            throw "ZIP validation failed: server/Dockerfile missing."
+                        $requiredEntries = @(
+                            "server/Dockerfile",
+                            "server/package.json",
+                            "client/Dockerfile.prod",
+                            "client/package.json",
+                            "client/nginx.conf"
+                        )
+
+                        foreach ($required in $requiredEntries) {
+                            if ($entries -notcontains $required) {
+                                throw "ZIP validation failed: $required missing."
+                            }
                         }
 
-                        if ($entries -notcontains "client/Dockerfile.prod") {
-                            throw "ZIP validation failed: client/Dockerfile.prod missing."
+                        # Reject Windows-style ZIP paths.
+                        foreach ($entry in $entries) {
+                            if ($entry.Contains([string]$backslash)) {
+                                throw "Invalid Windows-style ZIP entry: $entry"
+                            }
                         }
 
-                        if ($entries -notcontains "client/nginx.conf") {
-                            throw "ZIP validation failed: client/nginx.conf missing."
-                        }
-
-                        Write-Host "ZIP entries validated successfully."
+                        Write-Host "All ZIP entries validated successfully."
                     }
                     finally {
                         $checkArchive.Dispose()
@@ -201,14 +218,14 @@ pipeline {
                             throw "Jenkins environment credential not found."
                         }
 
-                        # Configure SSH private-key permissions.
+                        # Configure SSH key permissions.
                         $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
 
                         & icacls.exe $env:SSH_KEY /inheritance:r
                         & icacls.exe $env:SSH_KEY /grant:r "$($identity):(R)"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Unable to configure SSH key permissions."
+                            throw "SSH key permission configuration failed."
                         }
 
                         $sshOptions = @(
@@ -217,13 +234,13 @@ pipeline {
                             "-o", "ConnectTimeout=20"
                         )
 
-                        # Test SSH.
-                        Write-Host "Testing SSH connection to EC2..."
+                        # Verify SSH connectivity.
+                        Write-Host "Testing EC2 SSH connection..."
 
                         & ssh @sshOptions "$remoteUser@$hostName" "echo SSH connection successful"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "SSH connection failed."
+                            throw "EC2 SSH connection failed."
                         }
 
                         # Verify existing root Docker Hub authentication.
@@ -232,11 +249,11 @@ pipeline {
                         & ssh @sshOptions "$remoteUser@$hostName" "sudo -n test -s /root/.docker/config.json"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "EC2 root Docker Hub authentication is unavailable."
+                            throw "EC2 root Docker authentication is unavailable."
                         }
 
-                        # Create isolated build directory.
-                        # Existing /home/ec2-user/BikeLedger is not modified.
+                        # Prepare isolated build directory.
+                        # Never modify /home/ec2-user/BikeLedger.
                         $prepareCommand = "mkdir -p '$buildDir' '$deployDir' && find '$buildDir' -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +"
 
                         & ssh @sshOptions "$remoteUser@$hostName" $prepareCommand
@@ -251,11 +268,11 @@ pipeline {
                         & scp @sshOptions $zipFile "$remoteUser@${hostName}:$buildDir/BikeLedger-deployment.zip"
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Deployment ZIP upload failed."
+                            throw "ZIP upload failed."
                         }
 
-                        # Upload Docker Compose.
-                        Write-Host "Uploading Docker Compose file..."
+                        # Upload Compose file.
+                        Write-Host "Uploading Docker Compose..."
 
                         & scp @sshOptions $composeFile "$remoteUser@${hostName}:$deployDir/docker-compose.prod.yml"
 
@@ -263,8 +280,8 @@ pipeline {
                             throw "Docker Compose upload failed."
                         }
 
-                        # Upload .env securely from Jenkins Secret File.
-                        Write-Host "Uploading environment file..."
+                        # Upload protected environment file.
+                        Write-Host "Uploading environment configuration..."
 
                         & scp @sshOptions $env:ENV_FILE "$remoteUser@${hostName}:$deployDir/.env"
 
@@ -272,7 +289,7 @@ pipeline {
                             throw "Environment file upload failed."
                         }
 
-                        # Create extraction script.
+                        # Extraction script.
                         $extractContent = @'
 #!/bin/bash
 set -euo pipefail
@@ -281,7 +298,7 @@ BUILD_DIR="__BUILD_DIR__"
 DEPLOY_DIR="__DEPLOY_DIR__"
 ZIP_FILE="$BUILD_DIR/BikeLedger-deployment.zip"
 
-echo "Extracting BikeLedger deployment package..."
+echo "Extracting BikeLedger source..."
 
 python3 -m zipfile -e "$ZIP_FILE" "$BUILD_DIR"
 
@@ -289,12 +306,15 @@ test -d "$BUILD_DIR/server"
 test -d "$BUILD_DIR/client"
 
 test -f "$BUILD_DIR/server/Dockerfile"
+test -f "$BUILD_DIR/server/package.json"
+
 test -f "$BUILD_DIR/client/Dockerfile.prod"
+test -f "$BUILD_DIR/client/package.json"
 test -f "$BUILD_DIR/client/nginx.conf"
 
 chmod 600 "$DEPLOY_DIR/.env"
 
-echo "Deployment package extracted and validated successfully."
+echo "Source extraction and validation successful."
 '@
 
                         $extractContent = $extractContent.Replace("__BUILD_DIR__", $buildDir)
@@ -312,7 +332,7 @@ echo "Deployment package extracted and validated successfully."
                             throw "Extraction script upload failed."
                         }
 
-                        Write-Host "Extracting source files on EC2..."
+                        Write-Host "Extracting files on EC2..."
 
                         $extractCommand = "chmod +x '$buildDir/extract-deployment.sh' && bash '$buildDir/extract-deployment.sh'"
 
@@ -322,7 +342,7 @@ echo "Deployment package extracted and validated successfully."
                             throw "EC2 source extraction failed."
                         }
 
-                        # Create Docker deployment script.
+                        # Deployment script.
                         $deployContent = @'
 #!/bin/bash
 set -euo pipefail
@@ -335,7 +355,7 @@ BACKEND_IMAGE="shanumukh/bikeledger-backend"
 FRONTEND_IMAGE="shanumukh/bikeledger-frontend"
 
 echo "======================================"
-echo " BIKELEDGER DOCKER CI/CD"
+echo " BIKELEDGER DOCKER DEPLOYMENT"
 echo " BUILD: $BUILD_TAG"
 echo "======================================"
 
@@ -346,14 +366,14 @@ test -s "$DEPLOY_DIR/.env"
 
 cd "$DEPLOY_DIR"
 
-echo "Building backend Docker image..."
+echo "Building backend image..."
 
 sudo docker build \
     -t "$BACKEND_IMAGE:$BUILD_TAG" \
     -t "$BACKEND_IMAGE:latest" \
     "$BUILD_DIR/server"
 
-echo "Building frontend Docker image..."
+echo "Building frontend image..."
 
 sudo docker build \
     --build-arg VITE_API_URL=/api \
@@ -371,21 +391,20 @@ echo "Pushing frontend images..."
 sudo docker push "$FRONTEND_IMAGE:$BUILD_TAG"
 sudo docker push "$FRONTEND_IMAGE:latest"
 
-echo "Validating Docker Compose configuration..."
+echo "Validating Docker Compose..."
 
 sudo docker compose \
     --env-file .env \
     -f docker-compose.prod.yml \
     config -q
 
-echo "Deploying BikeLedger containers..."
+echo "Starting BikeLedger containers..."
 
 sudo env IMAGE_TAG="$BUILD_TAG" docker compose \
     --env-file .env \
     -f docker-compose.prod.yml \
     up -d --force-recreate
 
-echo "Waiting for containers to start..."
 sleep 10
 
 echo "======================================"
@@ -407,7 +426,7 @@ echo "======================================"
 sudo docker logs --tail 30 bikeledger-docker-client || true
 
 echo "======================================"
-echo " BIKELEDGER DEPLOYMENT COMPLETED"
+echo " DEPLOYMENT FINISHED"
 echo "======================================"
 '@
 
@@ -427,14 +446,14 @@ echo "======================================"
                             throw "Deployment script upload failed."
                         }
 
-                        Write-Host "Starting Docker deployment on EC2..."
+                        Write-Host "Executing Docker deployment on EC2..."
 
                         $remoteDeployCommand = "chmod +x '$deployDir/deploy-bikeledger.sh' && bash '$deployDir/deploy-bikeledger.sh'"
 
                         & ssh @sshOptions "$remoteUser@$hostName" $remoteDeployCommand
 
                         if ($LASTEXITCODE -ne 0) {
-                            throw "Docker deployment failed on EC2."
+                            throw "Docker deployment failed."
                         }
 
                         Write-Host "BikeLedger deployment completed successfully."
@@ -451,7 +470,6 @@ echo "======================================"
               BIKELEDGER DEPLOYMENT SUCCESSFUL
             ==========================================
               Frontend: http://15.134.65.78:8080
-              Backend:  Running inside Docker
             ==========================================
             '''
         }
