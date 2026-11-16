@@ -33,8 +33,10 @@ jobs:
         working-directory: client
         run: npm ci
 
-      - name: Build BikeLedger frontend
+      - name: Build Firebase frontend
         working-directory: client
+        env:
+          VITE_API_URL: ${{ secrets.VITE_API_URL }}
         run: npm run build -- --mode firebase
 
       - name: Deploy to Firebase Hosting
