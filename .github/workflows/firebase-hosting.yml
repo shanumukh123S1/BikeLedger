@@ -1,0 +1,45 @@
+
+name: Deploy BikeLedger to Firebase Hosting
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - "client/**"
+      - "firebase.json"
+      - ".github/workflows/firebase-hosting.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  build_and_deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Build BikeLedger frontend
+        working-directory: client
+        run: npm run build -- --mode firebase
+
+      - name: Deploy to Firebase Hosting
+        uses: FirebaseExtended/action-hosting-deploy@v0
+        with:
+          repoToken: "${{ secrets.GITHUB_TOKEN }}"
+          firebaseServiceAccount: "${{ secrets.FIREBASE_SERVICE_ACCOUNT_BIKELEDGER_61867 }}"
+          projectId: bikeledger-61867
+          channelId: live
