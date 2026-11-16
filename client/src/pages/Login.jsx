@@ -1,3 +1,144 @@
+// import { useState } from "react";
+// import { useNavigate } from "react-router-dom";
+// import { useAuth } from "../context/AuthContext";
+// import "../styles/Login.css";
+
+// const Login = () => {
+//   const { login } = useAuth();
+//   const navigate = useNavigate();
+
+//   const [formData, setFormData] = useState({
+//     email: "",
+//     password: "",
+//   });
+
+//   const [error, setError] = useState("");
+//   const [loading, setLoading] = useState(false);
+//   const [showPassword, setShowPassword] = useState(false);
+
+//   const handleChange = (e) => {
+//     setFormData({
+//       ...formData,
+//       [e.target.name]: e.target.value,
+//     });
+//   };
+
+//   const handleSubmit = async (e) => {
+//     e.preventDefault();
+//     setError("");
+
+//     if (!formData.email.trim() || !formData.password) {
+//       setError("Please enter your email and password.");
+//       return;
+//     }
+
+//     try {
+//       setLoading(true);
+
+//       await login(formData.email.trim(), formData.password);
+
+//       navigate("/dashboard", { replace: true });
+//     } catch (error) {
+//       setError(
+//         error.response?.data?.message || "Unable to login. Please try again.",
+//       );
+//     } finally {
+//       setLoading(false);
+//     }
+//   };
+
+//   return (
+//     <div className="login-page">
+//       <div className="login-brand-panel">
+//         <div className="brand-content">
+//           <div className="brand-logo">BL</div>
+
+//           <h1>BikeLedger</h1>
+
+//           <p>
+//             Simplifying two-wheeler billing, EMI calculations and payment
+//             management.
+//           </p>
+
+//           <div className="brand-footer">
+//             Two-Wheeler Billing Management System
+//           </div>
+//         </div>
+//       </div>
+
+//       <div className="login-form-panel">
+//         <div className="login-card">
+//           <div className="mobile-brand">BIKELEDGER</div>
+
+//           <span className="login-subtitle">WELCOME BACK</span>
+
+//           <h2>Staff Login</h2>
+
+//           <p className="login-description">
+//             Sign in to access your BikeLedger dashboard.
+//           </p>
+
+//           <form onSubmit={handleSubmit}>
+//             <div className="form-group">
+//               <label htmlFor="email">Email Address</label>
+
+//               <input
+//                 id="email"
+//                 type="email"
+//                 name="email"
+//                 placeholder="Enter your email"
+//                 value={formData.email}
+//                 onChange={handleChange}
+//                 autoComplete="username"
+//                 required
+//               />
+//             </div>
+
+//             <div className="form-group">
+//               <label htmlFor="password">Password</label>
+
+//               <div className="password-wrapper">
+//                 <input
+//                   id="password"
+//                   type={showPassword ? "text" : "password"}
+//                   name="password"
+//                   placeholder="Enter your password"
+//                   value={formData.password}
+//                   onChange={handleChange}
+//                   autoComplete="current-password"
+//                   required
+//                 />
+
+//                 <button
+//                   type="button"
+//                   className="password-toggle"
+//                   onClick={() => setShowPassword(!showPassword)}
+//                 >
+//                   {showPassword ? "Hide" : "Show"}
+//                 </button>
+//               </div>
+//             </div>
+
+//             {error && (
+//               <div className="login-error" role="alert">
+//                 {error}
+//               </div>
+//             )}
+
+//             <button type="submit" className="login-button" disabled={loading}>
+//               {loading ? "Signing in..." : "Sign In"}
+//             </button>
+//           </form>
+
+//           <p className="login-security">Authorized consultancy staff only.</p>
+//         </div>
+//       </div>
+//     </div>
+//   );
+// };
+
+// export default Login;
+
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -16,6 +157,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
 
+  // Handle input changes
   const handleChange = (e) => {
     setFormData({
       ...formData,
@@ -23,6 +165,7 @@ const Login = () => {
     });
   };
 
+  // Handle Firebase login
   const handleSubmit = async (e) => {
     e.preventDefault();
     setError("");
@@ -35,13 +178,51 @@ const Login = () => {
     try {
       setLoading(true);
 
-      await login(formData.email.trim(), formData.password);
+      await login(
+        formData.email.trim(),
+        formData.password
+      );
 
       navigate("/dashboard", { replace: true });
+
     } catch (error) {
+      console.error("Firebase Login Error:", error);
+
+      const errorMessages = {
+        "auth/invalid-credential":
+          "Invalid email or password.",
+
+        "auth/user-not-found":
+          "No account found with this email.",
+
+        "auth/wrong-password":
+          "Incorrect password.",
+
+        "auth/invalid-email":
+          "Please enter a valid email address.",
+
+        "auth/too-many-requests":
+          "Too many login attempts. Please try again later.",
+
+        "auth/network-request-failed":
+          "Network error. Please check your internet connection.",
+
+        "auth/user-disabled":
+          "Your account has been disabled.",
+
+        "Staff profile not found.":
+          "Your staff profile was not found. Please contact the administrator.",
+
+        "Your staff account is inactive.":
+          "Your staff account is inactive. Please contact the administrator.",
+      };
+
       setError(
-        error.response?.data?.message || "Unable to login. Please try again.",
+        errorMessages[error.code] ||
+        errorMessages[error.message] ||
+        "Unable to login. Please try again."
       );
+
     } finally {
       setLoading(false);
     }
@@ -49,8 +230,11 @@ const Login = () => {
 
   return (
     <div className="login-page">
+
+      {/* Brand Panel */}
       <div className="login-brand-panel">
         <div className="brand-content">
+
           <div className="brand-logo">BL</div>
 
           <h1>BikeLedger</h1>
@@ -63,14 +247,21 @@ const Login = () => {
           <div className="brand-footer">
             Two-Wheeler Billing Management System
           </div>
+
         </div>
       </div>
 
+      {/* Login Form Panel */}
       <div className="login-form-panel">
         <div className="login-card">
-          <div className="mobile-brand">BIKELEDGER</div>
 
-          <span className="login-subtitle">WELCOME BACK</span>
+          <div className="mobile-brand">
+            BIKELEDGER
+          </div>
+
+          <span className="login-subtitle">
+            WELCOME BACK
+          </span>
 
           <h2>Staff Login</h2>
 
@@ -79,8 +270,13 @@ const Login = () => {
           </p>
 
           <form onSubmit={handleSubmit}>
+
+            {/* Email */}
             <div className="form-group">
-              <label htmlFor="email">Email Address</label>
+
+              <label htmlFor="email">
+                Email Address
+              </label>
 
               <input
                 id="email"
@@ -92,12 +288,18 @@ const Login = () => {
                 autoComplete="username"
                 required
               />
+
             </div>
 
+            {/* Password */}
             <div className="form-group">
-              <label htmlFor="password">Password</label>
+
+              <label htmlFor="password">
+                Password
+              </label>
 
               <div className="password-wrapper">
+
                 <input
                   id="password"
                   type={showPassword ? "text" : "password"}
@@ -113,26 +315,42 @@ const Login = () => {
                   type="button"
                   className="password-toggle"
                   onClick={() => setShowPassword(!showPassword)}
+                  aria-label={
+                    showPassword ? "Hide password" : "Show password"
+                  }
                 >
                   {showPassword ? "Hide" : "Show"}
                 </button>
+
               </div>
+
             </div>
 
+            {/* Error Message */}
             {error && (
               <div className="login-error" role="alert">
                 {error}
               </div>
             )}
 
-            <button type="submit" className="login-button" disabled={loading}>
+            {/* Login Button */}
+            <button
+              type="submit"
+              className="login-button"
+              disabled={loading}
+            >
               {loading ? "Signing in..." : "Sign In"}
             </button>
+
           </form>
 
-          <p className="login-security">Authorized consultancy staff only.</p>
+          <p className="login-security">
+            Authorized consultancy staff only.
+          </p>
+
         </div>
       </div>
+
     </div>
   );
 };
