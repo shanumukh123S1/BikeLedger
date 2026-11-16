@@ -14,10 +14,11 @@ pipeline {
         FRONTEND_IMAGE = 'shanumukh/bikeledger-frontend'
 
         EC2_HOST = '15.134.65.78'
-        EC2_USER = 'ec2-user'
         EC2_DOCKER_DIR = '/home/ec2-user/BikeLedger-Docker'
 
         SSH_CREDENTIAL = 'bikeledger-ec2-ssh'
+        ENV_CREDENTIAL = 'bikeledger-env'
+        DOCKER_CREDENTIAL = 'dockerhub-credentials'
     }
 
     stages {
@@ -40,6 +41,8 @@ pipeline {
                 bat 'if not exist client\\Dockerfile.prod exit /b 1'
                 bat 'if not exist client\\nginx.conf exit /b 1'
                 bat 'if not exist docker-compose.prod.yml exit /b 1'
+
+                echo 'Docker configuration validated.'
             }
         }
 
@@ -104,25 +107,30 @@ pipeline {
         // 8. VERIFY PUBLISHED IMAGES
         stage('Verify Published Images') {
             steps {
-                bat 'docker image inspect %BACKEND_IMAGE%:latest'
-                bat 'docker image inspect %FRONTEND_IMAGE%:latest'
+                bat 'docker image inspect %BACKEND_IMAGE%:%BUILD_NUMBER%'
+                bat 'docker image inspect %FRONTEND_IMAGE%:%BUILD_NUMBER%'
 
-                echo 'Both BikeLedger images were published successfully.'
+                echo 'Both BikeLedger images published successfully.'
             }
         }
 
         // 9. DEPLOY TO AWS EC2
         stage('Deploy Docker Containers to AWS EC2') {
             steps {
-                echo 'Starting Docker deployment on AWS EC2...'
+                echo 'Starting BikeLedger AWS deployment...'
 
                 withCredentials([
+                    file(
+                        credentialsId: 'bikeledger-env',
+                        variable: 'ENV_FILE'
+                    ),
                     sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIAL}",
+                        credentialsId: 'bikeledger-ec2-ssh',
                         keyFileVariable: 'SSH_KEY',
                         usernameVariable: 'SSH_USER'
                     )
                 ]) {
+
                     bat '''
                         echo Configuring SSH key permissions...
 
@@ -138,15 +146,45 @@ pipeline {
 
                         if errorlevel 1 exit /b 1
 
+                        echo Transferring Jenkins environment file...
+
+                        scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes "%ENV_FILE%" %SSH_USER%@%EC2_HOST%:%EC2_DOCKER_DIR%/.env
+
+                        if errorlevel 1 exit /b 1
+
                         echo Transferring Docker Compose configuration...
 
                         scp -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes docker-compose.prod.yml %SSH_USER%@%EC2_HOST%:%EC2_DOCKER_DIR%/docker-compose.prod.yml
 
                         if errorlevel 1 exit /b 1
 
-                        echo Pulling new Docker images and deploying...
+                        echo Applying secure environment file permissions...
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml pull && docker compose -f docker-compose.prod.yml up -d --force-recreate && docker compose -f docker-compose.prod.yml ps"
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "chmod 600 %EC2_DOCKER_DIR%/.env"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Validating Docker Compose configuration...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml config -q"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Pulling the numbered Docker images...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "docker pull %BACKEND_IMAGE%:%BUILD_NUMBER% && docker pull %FRONTEND_IMAGE%:%BUILD_NUMBER%"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Deploying BikeLedger containers...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && IMAGE_TAG=%BUILD_NUMBER% docker compose -f docker-compose.prod.yml up -d --force-recreate"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Checking deployed containers...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "cd %EC2_DOCKER_DIR% && docker compose -f docker-compose.prod.yml ps"
 
                         if errorlevel 1 exit /b 1
                     '''
@@ -154,16 +192,17 @@ pipeline {
             }
         }
 
-        // 10. VERIFY EC2 DEPLOYMENT
+        // 10. VERIFY AWS DEPLOYMENT
         stage('Verify AWS Deployment') {
             steps {
                 withCredentials([
                     sshUserPrivateKey(
-                        credentialsId: "${SSH_CREDENTIAL}",
+                        credentialsId: 'bikeledger-ec2-ssh',
                         keyFileVariable: 'SSH_KEY',
                         usernameVariable: 'SSH_USER'
                     )
                 ]) {
+
                     bat '''
                         icacls "%SSH_KEY%" /inheritance:r
                         if errorlevel 1 exit /b 1
@@ -171,11 +210,27 @@ pipeline {
                         icacls "%SSH_KEY%" /grant:r "*S-1-5-18:R"
                         if errorlevel 1 exit /b 1
 
-                        echo Checking deployed frontend...
+                        echo Checking frontend availability...
 
-                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "curl -fsS http://localhost:8080/ -o /dev/null && echo FRONTEND_OK && docker ps"
-                        
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "curl -fsS http://localhost:8080/ -o /dev/null && echo FRONTEND_OK"
+
                         if errorlevel 1 exit /b 1
+
+                        echo Checking backend container state...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "test $(docker inspect -f '{{.State.Running}}' bikeledger-docker-server) = true"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Checking frontend container state...
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "test $(docker inspect -f '{{.State.Running}}' bikeledger-docker-client) = true"
+
+                        if errorlevel 1 exit /b 1
+
+                        echo Both BikeLedger containers are running.
+
+                        ssh -i "%SSH_KEY%" -o BatchMode=yes -o IdentitiesOnly=yes %SSH_USER%@%EC2_HOST% "docker ps"
                     '''
                 }
             }
@@ -185,7 +240,7 @@ pipeline {
     post {
         success {
             echo 'SUCCESS: BikeLedger Docker CI/CD completed!'
-            echo 'Docker images built and pushed successfully.'
+            echo 'Docker images built, pushed and deployed.'
             echo 'Application: http://15.134.65.78:8080'
         }
 
