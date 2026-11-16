@@ -56,8 +56,6 @@ pipeline {
 
                     Write-Host "Robocopy completed successfully. Exit code: $copyExitCode"
 
-                    # Robocopy codes 0-7 indicate success.
-                    # Reset native exit code before continuing.
                     $global:LASTEXITCODE = 0
 
                     Compress-Archive -Path "$stage\\*" `
@@ -69,7 +67,6 @@ pipeline {
 
                     Write-Host "Deployment package created successfully."
 
-                    # Ensure Jenkins receives a successful exit code.
                     $global:LASTEXITCODE = 0
                     exit 0
                 '''
@@ -97,18 +94,65 @@ pipeline {
                     powershell '''
                         $ErrorActionPreference = "Stop"
 
+                        # ==========================================
+                        # 1. SECURE JENKINS SSH PRIVATE KEY
+                        # ==========================================
+
+                        Write-Host "Securing Jenkins SSH private key..."
+
+                        $identity = [System.Security.Principal.WindowsIdentity]::GetCurrent().Name
+
+                        & icacls.exe $env:SSH_KEY /inheritance:r
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to remove inherited SSH key permissions."
+                        }
+
+                        & icacls.exe $env:SSH_KEY /grant:r "$($identity):(R)"
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Failed to grant Jenkins account SSH key access."
+                        }
+
+                        Write-Host "SSH private key permissions secured."
+
+                        # ==========================================
+                        # 2. PREPARE VARIABLES
+                        # ==========================================
+
                         $zip = Join-Path $env:WORKSPACE "bikeledger-deploy.zip"
                         $tag = $env:BUILD_NUMBER
 
+                        if (!(Test-Path $zip)) {
+                            throw "Deployment ZIP not found."
+                        }
+
                         $sshOptions = @(
                             "-i", $env:SSH_KEY,
-                            "-o", "StrictHostKeyChecking=accept-new"
+                            "-o", "StrictHostKeyChecking=accept-new",
+                            "-o", "BatchMode=yes",
+                            "-o", "ConnectTimeout=15"
                         )
 
                         $remote = "$($env:SSH_USER)@$($env:EC2_HOST)"
                         $buildDir = "/home/ec2-user/ci-builds/BikeLedger-$tag"
 
-                        # 1. Prepare EC2 directories.
+                        # ==========================================
+                        # 3. TEST EC2 SSH CONNECTION
+                        # ==========================================
+
+                        Write-Host "Testing EC2 SSH connection..."
+
+                        & ssh @sshOptions $remote "echo EC2_CONNECTION_SUCCESS"
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "SSH connection to EC2 failed."
+                        }
+
+                        # ==========================================
+                        # 4. PREPARE EC2 DIRECTORIES
+                        # ==========================================
+
                         Write-Host "Preparing EC2 directories..."
 
                         & ssh @sshOptions $remote `
@@ -118,7 +162,10 @@ pipeline {
                             throw "Could not prepare EC2 directories."
                         }
 
-                        # 2. Transfer source ZIP.
+                        # ==========================================
+                        # 5. TRANSFER SOURCE ZIP
+                        # ==========================================
+
                         Write-Host "Transferring source package..."
 
                         & scp @sshOptions $zip `
@@ -128,7 +175,10 @@ pipeline {
                             throw "Source package transfer failed."
                         }
 
-                        # 3. Transfer Docker Compose file.
+                        # ==========================================
+                        # 6. TRANSFER DOCKER COMPOSE FILE
+                        # ==========================================
+
                         Write-Host "Transferring Compose file..."
 
                         & scp @sshOptions `
@@ -139,7 +189,10 @@ pipeline {
                             throw "Compose file transfer failed."
                         }
 
-                        # 4. Transfer Jenkins environment Secret File.
+                        # ==========================================
+                        # 7. TRANSFER JENKINS ENV SECRET FILE
+                        # ==========================================
+
                         Write-Host "Transferring environment file..."
 
                         & scp @sshOptions $env:ENV_FILE `
@@ -149,7 +202,10 @@ pipeline {
                             throw "Environment file transfer failed."
                         }
 
-                        # 5. Extract source and secure .env.
+                        # ==========================================
+                        # 8. EXTRACT SOURCE AND SECURE ENV FILE
+                        # ==========================================
+
                         Write-Host "Extracting source on EC2..."
 
                         $extractCommand = @"
@@ -165,7 +221,10 @@ chmod 600 '$($env:DEPLOY_DIR)/.env'
                             throw "EC2 source extraction failed."
                         }
 
-                        # 6. Authenticate Docker Hub on EC2.
+                        # ==========================================
+                        # 9. DOCKER HUB LOGIN ON EC2
+                        # ==========================================
+
                         Write-Host "Logging in to Docker Hub on EC2..."
 
                         $env:DH_TOKEN | ssh @sshOptions $remote `
@@ -175,7 +234,10 @@ chmod 600 '$($env:DEPLOY_DIR)/.env'
                             throw "Docker Hub login failed on EC2."
                         }
 
-                        # 7. Prepare remote deployment script.
+                        # ==========================================
+                        # 10. CREATE REMOTE DEPLOYMENT SCRIPT
+                        # ==========================================
+
                         $remoteScript = @'
 #!/bin/bash
 set -euo pipefail
@@ -267,7 +329,10 @@ echo "===================================="
                         Set-Content -Path $scriptPath `
                             -Value $remoteScript -Encoding ascii
 
-                        # 8. Transfer deployment script.
+                        # ==========================================
+                        # 11. TRANSFER DEPLOYMENT SCRIPT
+                        # ==========================================
+
                         Write-Host "Transferring deployment script..."
 
                         & scp @sshOptions $scriptPath `
@@ -277,8 +342,11 @@ echo "===================================="
                             throw "Deployment script transfer failed."
                         }
 
-                        # 9. Execute deployment on EC2.
-                        Write-Host "Starting deployment on EC2..."
+                        # ==========================================
+                        # 12. EXECUTE DEPLOYMENT ON EC2
+                        # ==========================================
+
+                        Write-Host "Starting BikeLedger deployment on EC2..."
 
                         & ssh @sshOptions $remote `
                             "bash /tmp/bikeledger-deploy-$tag.sh"
