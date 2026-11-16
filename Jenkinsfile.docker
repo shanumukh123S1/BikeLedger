@@ -95,7 +95,7 @@ pipeline {
                         $ErrorActionPreference = "Stop"
 
                         # ==========================================
-                        # 1. SECURE JENKINS SSH PRIVATE KEY
+                        # 1. SECURE SSH PRIVATE KEY
                         # ==========================================
 
                         Write-Host "Securing Jenkins SSH private key..."
@@ -203,26 +203,77 @@ pipeline {
                         }
 
                         # ==========================================
-                        # 8. EXTRACT SOURCE AND SECURE ENV FILE
+                        # 8. CREATE LINUX EXTRACTION SCRIPT
                         # ==========================================
 
-                        Write-Host "Extracting source on EC2..."
+                        Write-Host "Creating Linux extraction script..."
 
-                        $extractCommand = @"
+                        $extractScript = @'
+#!/bin/bash
 set -e
-python3 -m zipfile -e /tmp/bikeledger-$tag.zip '$buildDir'
-rm -f /tmp/bikeledger-$tag.zip
-chmod 600 '$($env:DEPLOY_DIR)/.env'
-"@
 
-                        $extractCommand | ssh @sshOptions $remote "bash -s"
+BUILD_TAG="__BUILD_TAG__"
+BUILD_DIR="__BUILD_DIR__"
+DEPLOY_DIR="__DEPLOY_DIR__"
+
+echo "Extracting BikeLedger source..."
+
+python3 -m zipfile -e "/tmp/bikeledger-$BUILD_TAG.zip" "$BUILD_DIR"
+
+rm -f "/tmp/bikeledger-$BUILD_TAG.zip"
+
+echo "Securing environment file..."
+
+chmod 600 "$DEPLOY_DIR/.env"
+
+echo "Source extraction completed successfully."
+'@
+
+                        $extractScript = $extractScript.Replace(
+                            "__BUILD_TAG__", $tag
+                        ).Replace(
+                            "__BUILD_DIR__", $buildDir
+                        ).Replace(
+                            "__DEPLOY_DIR__", $env:DEPLOY_DIR
+                        )
+
+                        # Convert to Linux LF and ASCII without BOM.
+                        $extractScript = $extractScript -replace "`r`n", "`n"
+
+                        $extractPath = Join-Path $env:WORKSPACE "ec2-extract.sh"
+
+                        [System.IO.File]::WriteAllText(
+                            $extractPath,
+                            $extractScript,
+                            [System.Text.Encoding]::ASCII
+                        )
+
+                        # ==========================================
+                        # 9. TRANSFER AND EXECUTE EXTRACTION SCRIPT
+                        # ==========================================
+
+                        Write-Host "Transferring extraction script..."
+
+                        & scp @sshOptions $extractPath `
+                            "${remote}:/tmp/bikeledger-extract-$tag.sh"
+
+                        if ($LASTEXITCODE -ne 0) {
+                            throw "Extraction script transfer failed."
+                        }
+
+                        Write-Host "Executing extraction script on EC2..."
+
+                        & ssh @sshOptions $remote `
+                            "bash /tmp/bikeledger-extract-$tag.sh"
 
                         if ($LASTEXITCODE -ne 0) {
                             throw "EC2 source extraction failed."
                         }
 
+                        Write-Host "Source extraction completed successfully."
+
                         # ==========================================
-                        # 9. DOCKER HUB LOGIN ON EC2
+                        # 10. DOCKER HUB LOGIN ON EC2
                         # ==========================================
 
                         Write-Host "Logging in to Docker Hub on EC2..."
@@ -235,7 +286,7 @@ chmod 600 '$($env:DEPLOY_DIR)/.env'
                         }
 
                         # ==========================================
-                        # 10. CREATE REMOTE DEPLOYMENT SCRIPT
+                        # 11. CREATE REMOTE DEPLOYMENT SCRIPT
                         # ==========================================
 
                         $remoteScript = @'
@@ -324,13 +375,20 @@ echo "===================================="
                             "__DEPLOY_DIR__", $env:DEPLOY_DIR
                         )
 
+                        # Convert Windows CRLF to Linux LF.
+                        $remoteScript = $remoteScript -replace "`r`n", "`n"
+
                         $scriptPath = Join-Path $env:WORKSPACE "ec2-deploy.sh"
 
-                        Set-Content -Path $scriptPath `
-                            -Value $remoteScript -Encoding ascii
+                        # Save as ASCII without BOM.
+                        [System.IO.File]::WriteAllText(
+                            $scriptPath,
+                            $remoteScript,
+                            [System.Text.Encoding]::ASCII
+                        )
 
                         # ==========================================
-                        # 11. TRANSFER DEPLOYMENT SCRIPT
+                        # 12. TRANSFER DEPLOYMENT SCRIPT
                         # ==========================================
 
                         Write-Host "Transferring deployment script..."
@@ -343,7 +401,7 @@ echo "===================================="
                         }
 
                         # ==========================================
-                        # 12. EXECUTE DEPLOYMENT ON EC2
+                        # 13. EXECUTE DEPLOYMENT ON EC2
                         # ==========================================
 
                         Write-Host "Starting BikeLedger deployment on EC2..."
