@@ -139,6 +139,7 @@
 
 // export default Login;
 
+
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
@@ -159,10 +160,12 @@ const Login = () => {
 
   // Handle input changes
   const handleChange = (e) => {
-    setFormData({
-      ...formData,
-      [e.target.name]: e.target.value,
-    });
+    const { name, value } = e.target;
+
+    setFormData((prev) => ({
+      ...prev,
+      [name]: value,
+    }));
   };
 
   // Handle Firebase login
@@ -170,7 +173,10 @@ const Login = () => {
     e.preventDefault();
     setError("");
 
-    if (!formData.email.trim() || !formData.password) {
+    const email = formData.email.trim();
+    const password = formData.password;
+
+    if (!email || !password) {
       setError("Please enter your email and password.");
       return;
     }
@@ -178,25 +184,25 @@ const Login = () => {
     try {
       setLoading(true);
 
-      await login(
-        formData.email.trim(),
-        formData.password
-      );
+      await login(email, password);
 
       navigate("/dashboard", { replace: true });
 
     } catch (error) {
       console.error("Firebase Login Error:", error);
+      console.error("Firebase Error Code:", error.code);
+      console.error("Firebase Error Message:", error.message);
 
-      const errorMessages = {
+      // Firebase Authentication error messages
+      const firebaseErrors = {
         "auth/invalid-credential":
-          "Invalid email or password.",
+          "Invalid email or password. Please check your credentials.",
 
         "auth/user-not-found":
-          "No account found with this email.",
+          "No account found with this email address.",
 
         "auth/wrong-password":
-          "Incorrect password.",
+          "Incorrect password. Please try again.",
 
         "auth/invalid-email":
           "Please enter a valid email address.",
@@ -208,20 +214,30 @@ const Login = () => {
           "Network error. Please check your internet connection.",
 
         "auth/user-disabled":
-          "Your account has been disabled.",
+          "Your account has been disabled. Contact the administrator.",
 
-        "Staff profile not found.":
-          "Your staff profile was not found. Please contact the administrator.",
+        "auth/operation-not-allowed":
+          "Email and password authentication is not enabled.",
 
-        "Your staff account is inactive.":
-          "Your staff account is inactive. Please contact the administrator.",
+        "auth/configuration-not-found":
+          "Firebase Authentication configuration was not found.",
       };
 
-      setError(
-        errorMessages[error.code] ||
-        errorMessages[error.message] ||
-        "Unable to login. Please try again."
-      );
+      // Firestore staff-profile errors
+      const profileErrors = {
+        "Staff profile not found.":
+          "Staff profile not found. Please contact the administrator.",
+
+        "Your staff account is inactive.":
+          "Your staff account is inactive. Contact the administrator.",
+      };
+
+      const message =
+        firebaseErrors[error.code] ||
+        profileErrors[error.message] ||
+        `Login failed: ${error.message || "Unknown error"}`;
+
+      setError(message);
 
     } finally {
       setLoading(false);
@@ -314,7 +330,7 @@ const Login = () => {
                 <button
                   type="button"
                   className="password-toggle"
-                  onClick={() => setShowPassword(!showPassword)}
+                  onClick={() => setShowPassword((prev) => !prev)}
                   aria-label={
                     showPassword ? "Hide password" : "Show password"
                   }
