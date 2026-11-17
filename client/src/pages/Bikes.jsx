@@ -769,7 +769,6 @@ import {
 } from "firebase/firestore";
 
 import { db, auth } from "../firebase";
-
 import Sidebar from "../components/Sidebar";
 import "../styles/Bikes.css";
 
@@ -786,7 +785,7 @@ const emptyForm = {
   bikePrice: "",
 };
 
-// Use the browser's local date instead of UTC.
+// Use browser local date.
 const getLocalDate = () => {
   const date = new Date();
   const year = date.getFullYear();
@@ -832,23 +831,20 @@ const Bikes = () => {
       records.sort((a, b) => {
         const dateA = a.createdAt?.toMillis?.() || 0;
         const dateB = b.createdAt?.toMillis?.() || 0;
-
         return dateB - dateA;
       });
 
       const searchText = searchValue.trim().toLowerCase();
 
       if (searchText) {
-        records = records.filter((bike) => {
-          return (
-            (bike.brand || "").toLowerCase().includes(searchText) ||
-            (bike.model || "").toLowerCase().includes(searchText) ||
-            (bike.registrationNumber || "")
-              .toLowerCase()
-              .includes(searchText) ||
-            (bike.customerName || "").toLowerCase().includes(searchText)
-          );
-        });
+        records = records.filter((bike) =>
+          (bike.brand || "").toLowerCase().includes(searchText) ||
+          (bike.model || "").toLowerCase().includes(searchText) ||
+          (bike.registrationNumber || "")
+            .toLowerCase()
+            .includes(searchText) ||
+          (bike.customerName || "").toLowerCase().includes(searchText)
+        );
       }
 
       setBikes(records);
@@ -1036,7 +1032,6 @@ const Bikes = () => {
     });
 
     setEditingId(bike.id);
-
     setError("");
     setSuccess("");
     setShowForm(true);
@@ -1079,6 +1074,25 @@ const Bikes = () => {
         throw new Error("Please select a purchase date.");
       }
 
+      // REQUIRED FIELD VALIDATION
+      // These four fields are mandatory for registration and editing.
+
+      if (!formData.colour.trim()) {
+        throw new Error("Please enter the bike colour.");
+      }
+
+      if (!formData.registrationNumber.trim()) {
+        throw new Error("Please enter the registration number.");
+      }
+
+      if (!formData.chassisNumber.trim()) {
+        throw new Error("Please enter the chassis number.");
+      }
+
+      if (!formData.engineNumber.trim()) {
+        throw new Error("Please enter the engine number.");
+      }
+
       // ======================================
       // UPDATE EXISTING REGISTERED BIKE
       // ======================================
@@ -1100,7 +1114,6 @@ const Bikes = () => {
           engineNumber: formData.engineNumber.trim(),
 
           purchaseDate: formData.purchaseDate,
-
           updatedAt: serverTimestamp(),
         });
 
@@ -1170,7 +1183,6 @@ const Bikes = () => {
           }
 
           const currentBike = inventorySnapshot.data();
-
           const currentStock = Number(currentBike.stock);
 
           if (
@@ -1182,14 +1194,11 @@ const Bikes = () => {
             );
           }
 
-          // Preserve the existing inventory creator.
-          const inventoryUpdate = {
+          // Reduce inventory stock by one.
+          transaction.update(inventoryRef, {
             stock: currentStock - 1,
             updatedAt: serverTimestamp(),
-          };
-
-          // Update the inventory stock.
-          transaction.update(inventoryRef, inventoryUpdate);
+          });
 
           // Create the customer bike record.
           transaction.set(newBikeRef, {
@@ -1264,7 +1273,6 @@ const Bikes = () => {
       await deleteDoc(doc(db, "bikes", id));
 
       setSuccess("Bike record deleted successfully.");
-
       await fetchBikes(search);
     } catch (err) {
       console.error("Bike deletion error:", err);
@@ -1324,7 +1332,6 @@ const Bikes = () => {
       <Sidebar />
 
       <main className="bikes-main">
-
         {/* PAGE HEADER */}
 
         <header className="bikes-header">
@@ -1382,7 +1389,6 @@ const Bikes = () => {
 
         {showForm && (
           <section className="bike-form-card">
-
             <div className="bike-form-heading">
               <h2>
                 {editingId ? "Edit Bike Details" : "Register New Bike"}
@@ -1398,15 +1404,11 @@ const Bikes = () => {
             </div>
 
             <form onSubmit={handleSubmit}>
-
               <div className="bike-form-grid">
-
                 {/* CUSTOMER SELECTION */}
 
                 <div className="bike-field full-width">
-                  <label htmlFor="customer">
-                    Select Customer *
-                  </label>
+                  <label htmlFor="customer">Select Customer *</label>
 
                   <select
                     id="customer"
@@ -1446,9 +1448,7 @@ const Bikes = () => {
                       onChange={handleInventoryChange}
                       required
                     >
-                      <option value="">
-                        Choose an available bike
-                      </option>
+                      <option value="">Choose an available bike</option>
 
                       {availableInventory.map((bike) => (
                         <option key={bike.id} value={bike.id}>
@@ -1459,7 +1459,8 @@ const Bikes = () => {
 
                     {availableInventory.length === 0 && (
                       <small>
-                        No bikes are currently available. Add stock from Bike Inventory first.
+                        No bikes are currently available. Add stock from Bike
+                        Inventory first.
                       </small>
                     )}
                   </div>
@@ -1541,10 +1542,10 @@ const Bikes = () => {
                   </>
                 )}
 
-                {/* COLOUR */}
+                {/* COLOUR - REQUIRED */}
 
                 <div className="bike-field">
-                  <label>Colour</label>
+                  <label>Colour *</label>
 
                   {!editingId &&
                   Array.isArray(selectedInventoryBike?.colors) &&
@@ -1553,6 +1554,7 @@ const Bikes = () => {
                       name="colour"
                       value={formData.colour}
                       onChange={handleChange}
+                      required
                     >
                       <option value="">Choose colour</option>
 
@@ -1568,46 +1570,50 @@ const Bikes = () => {
                       value={formData.colour}
                       onChange={handleChange}
                       placeholder="Enter bike colour"
+                      required
                     />
                   )}
                 </div>
 
-                {/* REGISTRATION NUMBER */}
+                {/* REGISTRATION NUMBER - REQUIRED */}
 
                 <div className="bike-field">
-                  <label>Registration Number</label>
+                  <label>Registration Number *</label>
 
                   <input
                     name="registrationNumber"
                     value={formData.registrationNumber}
                     onChange={handleChange}
                     placeholder="Example: AP XX AB 1234"
+                    required
                   />
                 </div>
 
-                {/* CHASSIS NUMBER */}
+                {/* CHASSIS NUMBER - REQUIRED */}
 
                 <div className="bike-field">
-                  <label>Chassis Number</label>
+                  <label>Chassis Number *</label>
 
                   <input
                     name="chassisNumber"
                     value={formData.chassisNumber}
                     onChange={handleChange}
                     placeholder="Enter chassis number"
+                    required
                   />
                 </div>
 
-                {/* ENGINE NUMBER */}
+                {/* ENGINE NUMBER - REQUIRED */}
 
                 <div className="bike-field">
-                  <label>Engine Number</label>
+                  <label>Engine Number *</label>
 
                   <input
                     name="engineNumber"
                     value={formData.engineNumber}
                     onChange={handleChange}
                     placeholder="Enter engine number"
+                    required
                   />
                 </div>
 
@@ -1654,7 +1660,8 @@ const Bikes = () => {
                         ? `₹${showroomPrice.toLocaleString("en-IN")}`
                         : "Price not configured"}
                       <br />
-                      Discounts are allowed, but the purchase price cannot exceed showroom price.
+                      Discounts are allowed, but the purchase price cannot
+                      exceed showroom price.
                     </small>
                   )}
 
@@ -1664,13 +1671,11 @@ const Bikes = () => {
                     </small>
                   )}
                 </div>
-
               </div>
 
               {/* FORM ACTIONS */}
 
               <div className="bike-form-actions">
-
                 <button
                   type="button"
                   className="bike-cancel-button"
@@ -1701,7 +1706,6 @@ const Bikes = () => {
                       ? "Update Bike"
                       : "Confirm Purchase & Register"}
                 </button>
-
               </div>
             </form>
           </section>
@@ -1710,25 +1714,20 @@ const Bikes = () => {
         {/* REGISTERED BIKE RECORDS */}
 
         <section className="bike-table-card">
-
           <div className="bike-table-heading">
             <h2>Bike Records</h2>
             <span>{bikes.length} records</span>
           </div>
 
           {loading ? (
-            <p className="bike-empty">
-              Loading bike records...
-            </p>
+            <p className="bike-empty">Loading bike records...</p>
           ) : bikes.length === 0 ? (
             <p className="bike-empty">
               No bike records found. Add your first bike.
             </p>
           ) : (
             <div className="bike-table-wrapper">
-
               <table className="bike-table">
-
                 <thead>
                   <tr>
                     <th>Customer</th>
@@ -1743,15 +1742,9 @@ const Bikes = () => {
                 <tbody>
                   {bikes.map((bike) => (
                     <tr key={bike.id}>
-
                       <td>
-                        <strong>
-                          {bike.customerName || "Unknown"}
-                        </strong>
-
-                        <small>
-                          {bike.customerPhone || ""}
-                        </small>
+                        <strong>{bike.customerName || "Unknown"}</strong>
+                        <small>{bike.customerPhone || ""}</small>
                       </td>
 
                       <td>
@@ -1776,7 +1769,6 @@ const Bikes = () => {
 
                       <td>
                         <div className="bike-actions">
-
                           <button
                             type="button"
                             className="bike-edit-button"
@@ -1796,26 +1788,17 @@ const Bikes = () => {
                               ? "Deleting..."
                               : "Delete"}
                           </button>
-
                         </div>
                       </td>
-
                     </tr>
                   ))}
                 </tbody>
-
               </table>
             </div>
           )}
         </section>
-
       </main>
     </div>
-  );
-};
-
-export default Bikes;
-
   );
 };
 
