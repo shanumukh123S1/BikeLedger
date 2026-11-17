@@ -2965,9 +2965,17 @@
 // }
 
 // export default Billing;
+
 import React, { useCallback, useEffect, useMemo, useState } from "react";
+import { auth, db } from "../firebase";
+import {
+  collection,
+  doc,
+  getDocs,
+  runTransaction,
+  serverTimestamp,
+} from "firebase/firestore";
 import Sidebar from "../components/Sidebar";
-import api from "../services/api";
 import "../styles/Billing.css";
 
 const money = (value) =>
@@ -2977,19 +2985,17 @@ const money = (value) =>
     maximumFractionDigits: 2,
   }).format(Number(value) || 0);
 
-const dateText = (value) =>
-  value ? new Date(value).toLocaleDateString("en-IN") : "—";
-
 const today = () => {
   const date = new Date();
   const offset = date.getTimezoneOffset();
-  return new Date(date.getTime() - offset * 60000).toISOString().split("T")[0];
+  return new Date(date.getTime() - offset * 60000)
+    .toISOString()
+    .split("T")[0];
 };
 
 const nextMonthDate = () => {
   const date = new Date();
   const day = date.getDate();
-
   date.setDate(1);
   date.setMonth(date.getMonth() + 1);
 
@@ -3002,28 +3008,37 @@ const nextMonthDate = () => {
   date.setDate(Math.min(day, lastDay));
 
   const offset = date.getTimezoneOffset();
-  return new Date(date.getTime() - offset * 60000).toISOString().split("T")[0];
+  return new Date(date.getTime() - offset * 60000)
+    .toISOString()
+    .split("T")[0];
 };
 
 const roundMoney = (value) =>
   Math.round((Number(value) + Number.EPSILON) * 100) / 100;
 
-// Annual simple interest calculation.
-const calculateSimpleInterest = (principal, annualRate, months) => {
-  if (!principal || !months) return 0;
+const calculateInterest = (principal, rate, months) =>
+  roundMoney(principal * (rate / 100) * (months / 12));
 
-  return roundMoney(
-    Number(principal) * (Number(annualRate || 0) / 100) * (Number(months) / 12),
-  );
+const calculateEMI = (principal, rate, months) => {
+  if (!months) return 0;
+
+  const interest = calculateInterest(principal, rate, months);
+  return roundMoney((principal + interest) / months);
 };
 
-// Monthly installment = (Principal + Total Interest) / Tenure.
-const calculateEMI = (principal, annualRate, months) => {
-  if (!principal || !months) return 0;
+const getStatus = (totalPaid, totalPayable, schedule = []) => {
+  if (totalPaid >= totalPayable - 0.01) return "Paid";
 
-  const totalInterest = calculateSimpleInterest(principal, annualRate, months);
+  const hasOverdue = schedule.some(
+    (item) =>
+      item.status !== "Paid" &&
+      item.dueDate < today() &&
+      Number(item.installmentAmount) - Number(item.paidAmount || 0) > 0.01,
+  );
 
-  return roundMoney((Number(principal) + totalInterest) / Number(months));
+  if (hasOverdue) return "Overdue";
+  if (totalPaid > 0) return "Partial";
+  return "Pending";
 };
 
 const statusClass = (status) =>
@@ -3031,19 +3046,43 @@ const statusClass = (status) =>
     .toLowerCase()
     .replace(/\s+/g, "-")}`;
 
+const addMonths = (dateString, months) => {
+  const date = new Date(`${dateString}T12:00:00`);
+  const originalDay = date.getDate();
+
+  date.setDate(1);
+  date.setMonth(date.getMonth() + months);
+
+  const lastDay = new Date(
+    date.getFullYear(),
+    date.getMonth() + 1,
+    0,
+  ).getDate();
+
+  date.setDate(Math.min(originalDay, lastDay));
+
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
 function Billing() {
-  const [activeTab, setActiveTab] = useState("invoices");
   const [invoices, setInvoices] = useState([]);
   const [availableBikes, setAvailableBikes] = useState([]);
   const [payments, setPayments] = useState([]);
 
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
+
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
+  const [activeTab, setActiveTab] = useState("invoices");
   const [showInvoiceForm, setShowInvoiceForm] = useState(false);
   const [showPaymentForm, setShowPaymentForm] = useState(false);
+
   const [selectedInvoice, setSelectedInvoice] = useState(null);
   const [expandedInvoiceId, setExpandedInvoiceId] = useState(null);
 
@@ -3074,27 +3113,75 @@ function Billing() {
     notes: "",
   });
 
-  // Fetch invoices, available bikes and payment history.
+  const currentUser = auth.currentUser;
+
+  // --------------------------------------------------
+  // FETCH FIRESTORE DATA
+  // --------------------------------------------------
+
   const fetchBillingData = useCallback(async () => {
+    if (!auth.currentUser) {
+      setError("Please sign in to access billing.");
+      setLoading(false);
+      return;
+    }
+
     try {
       setLoading(true);
       setError("");
 
-      const [invoiceResponse, bikeResponse, paymentResponse] =
+      const [invoiceSnapshot, bikeSnapshot, paymentSnapshot] =
         await Promise.all([
-          api.get("/billing"),
-          api.get("/billing/available-bikes"),
-          api.get("/payments"),
+          getDocs(collection(db, "invoices")),
+          getDocs(collection(db, "bikes")),
+          getDocs(collection(db, "payments")),
         ]);
 
-      setInvoices(invoiceResponse.data.invoices || []);
-      setAvailableBikes(bikeResponse.data.bikes || []);
-      setPayments(paymentResponse.data.payments || []);
-    } catch (err) {
-      console.error("Billing data error:", err);
+      const invoiceData = invoiceSnapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
 
+      const bikeData = bikeSnapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
+
+      const paymentData = paymentSnapshot.docs.map((item) => ({
+        id: item.id,
+        ...item.data(),
+      }));
+
+      invoiceData.sort(
+        (a, b) =>
+          String(b.createdAt?.toDate?.() || b.invoiceDate || "").localeCompare(
+            String(a.createdAt?.toDate?.() || a.invoiceDate || ""),
+          ),
+      );
+
+      paymentData.sort((a, b) =>
+        String(b.paymentDate || "").localeCompare(String(a.paymentDate || "")),
+      );
+
+      // A bike can have only one invoice.
+      const invoiceBikeIds = new Set(
+        invoiceData.map((invoice) => invoice.bikeId),
+      );
+
+      const available = bikeData.filter(
+        (bike) =>
+          bike.isActive !== false &&
+          !bike.invoiceId &&
+          !invoiceBikeIds.has(bike.id),
+      );
+
+      setInvoices(invoiceData);
+      setAvailableBikes(available);
+      setPayments(paymentData);
+    } catch (err) {
+      console.error("Firestore billing error:", err);
       setError(
-        err.response?.data?.message || "Unable to load billing information.",
+        err.message || "Unable to load billing information from Firestore.",
       );
     } finally {
       setLoading(false);
@@ -3105,129 +3192,108 @@ function Billing() {
     fetchBillingData();
   }, [fetchBillingData]);
 
-  // Selected registered bike.
+  // --------------------------------------------------
+  // SELECTED BIKE AND LIVE EMI CALCULATIONS
+  // --------------------------------------------------
+
   const selectedBike = useMemo(
-    () => availableBikes.find((bike) => bike._id === invoiceForm.bikeId),
+    () => availableBikes.find((bike) => bike.id === invoiceForm.bikeId),
     [availableBikes, invoiceForm.bikeId],
   );
 
   const bikePrice = Number(selectedBike?.bikePrice || 0);
   const downPayment = Number(invoiceForm.downPayment || 0);
 
-  // Amount remaining after down payment.
   const financedBalance = Math.max(0, bikePrice - downPayment);
 
-  // Processing fee is calculated on the financed balance.
   const processingFeeAmount = roundMoney(
-    financedBalance * (Number(invoiceForm.processingFeePercentage || 0) / 100),
+    financedBalance *
+      (Number(invoiceForm.processingFeePercentage || 0) / 100),
   );
 
   const documentationFee = Number(invoiceForm.documentationFee || 0);
-
   const otherChargesAmount = Number(invoiceForm.otherChargesAmount || 0);
 
   const totalFees = roundMoney(
     processingFeeAmount + documentationFee + otherChargesAmount,
   );
 
-  // Add applicable fees before calculating interest.
-  const calculatedPrincipal = roundMoney(financedBalance + totalFees);
+  const principal = roundMoney(financedBalance + totalFees);
 
-  // Annual simple interest preview.
-  const estimatedInterest = calculateSimpleInterest(
-    calculatedPrincipal,
-    Number(invoiceForm.annualInterestRate),
-    Number(invoiceForm.tenureMonths),
+  const estimatedInterest = calculateInterest(
+    principal,
+    Number(invoiceForm.annualInterestRate || 0),
+    Number(invoiceForm.tenureMonths || 0),
   );
 
   const monthlyEMI = calculateEMI(
-    calculatedPrincipal,
-    Number(invoiceForm.annualInterestRate),
-    Number(invoiceForm.tenureMonths),
-  );
-
-  const estimatedInstallmentTotal = roundMoney(
-    calculatedPrincipal + estimatedInterest,
+    principal,
+    Number(invoiceForm.annualInterestRate || 0),
+    Number(invoiceForm.tenureMonths || 0),
   );
 
   const estimatedTotalPayable = roundMoney(
-    downPayment + estimatedInstallmentTotal,
+    downPayment + principal + estimatedInterest,
   );
 
-  // Count overdue installments.
-  const overdueInstallments = useMemo(
-    () =>
-      invoices.reduce(
-        (total, invoice) =>
-          total +
-          (invoice.emiSchedule || []).filter(
-            (item) => item.status === "Overdue",
-          ).length,
-        0,
-      ),
-    [invoices],
+  // --------------------------------------------------
+  // DASHBOARD STATISTICS
+  // --------------------------------------------------
+
+  const overdueInstallments = invoices.reduce(
+    (total, invoice) =>
+      total +
+      (invoice.emiSchedule || []).filter(
+        (item) =>
+          item.status !== "Paid" &&
+          item.dueDate < today() &&
+          Number(item.installmentAmount) - Number(item.paidAmount || 0) > 0.01,
+      ).length,
+    0,
   );
 
-  // Search and filter invoices.
-  const filteredInvoices = useMemo(() => {
-    return invoices.filter((invoice) => {
-      const customer = invoice.customer?.name || "";
-      const invoiceNumber = invoice.invoiceNumber || "";
-      const bike = invoice.bike || {};
-
-      const bikeName = `${bike.brand || ""} ${bike.model || ""}`;
-
-      const matchesSearch = [
-        customer,
-        invoiceNumber,
-        bikeName,
-        bike.registrationNumber || "",
-      ]
-        .join(" ")
-        .toLowerCase()
-        .includes(search.toLowerCase());
-
-      const matchesStatus =
-        statusFilter === "All" || invoice.paymentStatus === statusFilter;
-
-      return matchesSearch && matchesStatus;
-    });
-  }, [invoices, search, statusFilter]);
-
-  // Dashboard statistics.
   const stats = useMemo(
     () => ({
       totalInvoices: invoices.length,
-
       collected: invoices.reduce(
         (sum, invoice) => sum + Number(invoice.totalPaid || 0),
         0,
       ),
-
       outstanding: invoices.reduce(
         (sum, invoice) => sum + Number(invoice.balanceDue || 0),
         0,
       ),
-
       paid: invoices.filter((invoice) => invoice.paymentStatus === "Paid")
         .length,
     }),
     [invoices],
   );
 
-  const getInvoicePayments = (invoiceId) =>
-    payments.filter(
-      (payment) =>
-        String(payment.invoice?._id || payment.invoice) === String(invoiceId),
-    );
+  const filteredInvoices = useMemo(() => {
+    return invoices.filter((invoice) => {
+      const searchText = [
+        invoice.customerName,
+        invoice.invoiceNumber,
+        invoice.brand,
+        invoice.model,
+        invoice.registrationNumber,
+      ]
+        .join(" ")
+        .toLowerCase();
 
-  const getDownPaymentPaid = (invoice) =>
-    getInvoicePayments(invoice._id)
-      .filter((payment) => payment.paymentType === "Down Payment")
-      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      const matchesSearch = searchText.includes(search.toLowerCase());
 
-  const getNextInstallment = (invoice) =>
-    (invoice.emiSchedule || []).find((item) => item.status !== "Paid");
+      const matchesStatus =
+        statusFilter === "All" ||
+        invoice.paymentStatus === statusFilter;
+
+      return matchesSearch && matchesStatus;
+    });
+  }, [invoices, search, statusFilter]);
+
+  // --------------------------------------------------
+  // FORM HELPERS
+  // --------------------------------------------------
 
   const resetInvoiceForm = () => {
     setInvoiceForm({
@@ -3245,6 +3311,13 @@ function Billing() {
     });
   };
 
+  const closeForms = () => {
+    setShowInvoiceForm(false);
+    setShowPaymentForm(false);
+    setSelectedInvoice(null);
+    setError("");
+  };
+
   const handleInvoiceChange = (event) => {
     const { name, value } = event.target;
 
@@ -3254,24 +3327,69 @@ function Billing() {
     }));
   };
 
-  const closeForms = () => {
-    setShowInvoiceForm(false);
-    setShowPaymentForm(false);
-    setSelectedInvoice(null);
-    setError("");
+  // --------------------------------------------------
+  // CREATE EMI SCHEDULE
+  // --------------------------------------------------
+
+  const createEMISchedule = (
+    amount,
+    interest,
+    months,
+    firstDueDate,
+  ) => {
+    const total = roundMoney(amount + interest);
+    const regularInstallment = roundMoney(total / months);
+
+    let allocated = 0;
+
+    return Array.from({ length: months }, (_, index) => {
+      const installmentAmount =
+        index === months - 1
+          ? roundMoney(total - allocated)
+          : regularInstallment;
+
+      allocated = roundMoney(allocated + installmentAmount);
+
+      return {
+        installmentNumber: index + 1,
+        dueDate: addMonths(firstDueDate, index),
+        principalAmount: roundMoney(amount / months),
+        interestAmount: roundMoney(interest / months),
+        installmentAmount,
+        paidAmount: 0,
+        status: "Pending",
+      };
+    });
   };
 
-  // Create invoice.
+  // --------------------------------------------------
+  // CREATE INVOICE
+  // --------------------------------------------------
+
   const handleCreateInvoice = async (event) => {
     event.preventDefault();
 
-    setError("");
-    setSuccess("");
+    if (!auth.currentUser) {
+      setError("Your session has expired. Please sign in again.");
+      return;
+    }
 
-    if (!invoiceForm.bikeId) {
+    if (!selectedBike) {
       setError("Please select a registered bike.");
       return;
     }
+
+    if (!selectedBike.customerId || !selectedBike.customerName) {
+      setError("Customer information is missing from this bike record.");
+      return;
+    }
+
+    if (!Number.isFinite(bikePrice) || bikePrice <= 0) {
+      setError("The registered bike must have a valid purchase price.");
+      return;
+    }
+
+    let invoiceData;
 
     if (invoiceForm.paymentType === "EMI") {
       if (
@@ -3283,18 +3401,16 @@ function Billing() {
         return;
       }
 
-      if (
-        !Number.isFinite(Number(invoiceForm.annualInterestRate)) ||
-        Number(invoiceForm.annualInterestRate) < 0
-      ) {
+      const rate = Number(invoiceForm.annualInterestRate);
+      const tenure = Number(invoiceForm.tenureMonths);
+      const processing = Number(invoiceForm.processingFeePercentage);
+
+      if (!Number.isFinite(rate) || rate < 0 || rate > 100) {
         setError("Enter a valid annual interest rate.");
         return;
       }
 
-      if (
-        !Number.isFinite(Number(invoiceForm.processingFeePercentage)) ||
-        Number(invoiceForm.processingFeePercentage) < 0
-      ) {
+      if (!Number.isFinite(processing) || processing < 0 || processing > 100) {
         setError("Enter a valid processing fee percentage.");
         return;
       }
@@ -3305,15 +3421,11 @@ function Billing() {
         !Number.isFinite(otherChargesAmount) ||
         otherChargesAmount < 0
       ) {
-        setError("Documentation and other charges cannot be negative.");
+        setError("Charges must be valid non-negative amounts.");
         return;
       }
 
-      if (
-        !Number.isInteger(Number(invoiceForm.tenureMonths)) ||
-        Number(invoiceForm.tenureMonths) < 1 ||
-        Number(invoiceForm.tenureMonths) > 60
-      ) {
+      if (!Number.isInteger(tenure) || tenure < 1 || tenure > 60) {
         setError("Tenure must be between 1 and 60 months.");
         return;
       }
@@ -3322,98 +3434,190 @@ function Billing() {
         setError("Please select the first EMI due date.");
         return;
       }
+
+      if (invoiceForm.firstDueDate < today()) {
+        setError("The first EMI due date cannot be in the past.");
+        return;
+      }
+
+      const interest = calculateInterest(principal, rate, tenure);
+
+      invoiceData = {
+        paymentType: "EMI",
+        downPayment,
+        tenureMonths: tenure,
+        annualInterestRate: rate,
+        processingFeePercentage: processing,
+        processingFeeAmount,
+        documentationFee,
+        otherChargesAmount,
+        otherChargesDescription:
+          invoiceForm.otherChargesDescription.trim(),
+        totalFees,
+        financedBalance,
+        principal,
+        totalInterest: interest,
+        monthlyEMI: calculateEMI(principal, rate, tenure),
+        emiSchedule: createEMISchedule(
+          principal,
+          interest,
+          tenure,
+          invoiceForm.firstDueDate,
+        ),
+        totalPayable: roundMoney(downPayment + principal + interest),
+        firstDueDate: invoiceForm.firstDueDate,
+      };
+    } else {
+      invoiceData = {
+        paymentType: "Full Payment",
+        downPayment: 0,
+        tenureMonths: 0,
+        annualInterestRate: 0,
+        processingFeePercentage: 0,
+        processingFeeAmount: 0,
+        documentationFee: 0,
+        otherChargesAmount: 0,
+        totalFees: 0,
+        financedBalance: 0,
+        principal: bikePrice,
+        totalInterest: 0,
+        monthlyEMI: 0,
+        emiSchedule: [],
+        totalPayable: bikePrice,
+      };
     }
 
     try {
       setSaving(true);
+      setError("");
+      setSuccess("");
 
-      const payload = {
-        bikeId: invoiceForm.bikeId,
-        paymentType: invoiceForm.paymentType,
-        notes: invoiceForm.notes,
-      };
+      const bikeRef = doc(db, "bikes", selectedBike.id);
+      const invoiceRef = doc(collection(db, "invoices"));
 
-      if (invoiceForm.paymentType === "EMI") {
-        payload.downPayment = downPayment;
-        payload.tenureMonths = Number(invoiceForm.tenureMonths);
+      await runTransaction(db, async (transaction) => {
+        const bikeSnapshot = await transaction.get(bikeRef);
 
-        // Backend now expects annualInterestRate.
-        payload.annualInterestRate = Number(invoiceForm.annualInterestRate);
+        if (!bikeSnapshot.exists()) {
+          throw new Error("Registered bike no longer exists.");
+        }
 
-        payload.processingFeePercentage = Number(
-          invoiceForm.processingFeePercentage,
-        );
+        const currentBike = bikeSnapshot.data();
 
-        payload.documentationFee = documentationFee;
-        payload.otherChargesAmount = otherChargesAmount;
+        if (currentBike.invoiceId) {
+          throw new Error("An invoice already exists for this bike.");
+        }
 
-        payload.otherChargesDescription = invoiceForm.otherChargesDescription;
+        const invoiceNumber = `BL-${today().replaceAll("-", "")}-${invoiceRef.id
+          .slice(0, 6)
+          .toUpperCase()}`;
 
-        payload.firstDueDate = invoiceForm.firstDueDate;
-      }
+        const finalInvoice = {
+          ...invoiceData,
 
-      const response = await api.post("/billing", payload);
+          invoiceNumber,
+          bikeId: selectedBike.id,
+          customerId: currentBike.customerId,
+          customerName: currentBike.customerName,
+          customerPhone: currentBike.customerPhone || "",
 
-      setSuccess(response.data.message || "Invoice created successfully.");
+          brand: currentBike.brand || "",
+          model: currentBike.model || "",
+          colour: currentBike.colour || "",
+          registrationNumber: currentBike.registrationNumber || "",
+          chassisNumber: currentBike.chassisNumber || "",
+          engineNumber: currentBike.engineNumber || "",
+          bikePrice: Number(currentBike.bikePrice),
+
+          invoiceDate: today(),
+          notes: invoiceForm.notes.trim(),
+
+          totalPaid: 0,
+          balanceDue: invoiceData.totalPayable,
+          paymentStatus: "Pending",
+
+          createdBy: auth.currentUser.uid,
+          createdAt: serverTimestamp(),
+        };
+
+        transaction.set(invoiceRef, finalInvoice);
+
+        transaction.update(bikeRef, {
+          invoiceId: invoiceRef.id,
+          invoiceNumber,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      setSuccess("Invoice created successfully.");
 
       setShowInvoiceForm(false);
       resetInvoiceForm();
 
       await fetchBillingData();
     } catch (err) {
-      console.error("Create invoice error:", err);
-
-      setError(err.response?.data?.message || "Failed to create invoice.");
+      console.error("Invoice creation error:", err);
+      setError(err.message || "Unable to create invoice.");
     } finally {
       setSaving(false);
     }
   };
 
-  // Open payment form.
+  // --------------------------------------------------
+  // PAYMENT HELPERS
+  // --------------------------------------------------
+
+  const getInvoicePayments = (invoiceId) =>
+    payments.filter((payment) => payment.invoiceId === invoiceId);
+
+  const getDownPaymentPaid = (invoice) =>
+    getInvoicePayments(invoice.id)
+      .filter((payment) => payment.paymentType === "Down Payment")
+      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+
+  const getNextInstallment = (invoice) =>
+    (invoice.emiSchedule || []).find(
+      (item) => Number(item.installmentAmount) - Number(item.paidAmount || 0) > 0.01,
+    );
+
   const openPaymentForm = (invoice, installment = null) => {
     setSelectedInvoice(invoice);
     setError("");
     setSuccess("");
 
     let paymentType = "Full Payment";
-    let amount = invoice.balanceDue || "";
+    let amount = Number(invoice.balanceDue || 0);
+    let installmentNumber = "";
 
     if (invoice.paymentType === "EMI") {
-      const downPaymentRemaining =
-        Number(invoice.downPayment || 0) - getDownPaymentPaid(invoice);
+      const downPaymentRemaining = Math.max(
+        0,
+        Number(invoice.downPayment || 0) - getDownPaymentPaid(invoice),
+      );
 
       if (downPaymentRemaining > 0.01 && !installment) {
         paymentType = "Down Payment";
-        amount = roundMoney(downPaymentRemaining).toFixed(2);
+        amount = downPaymentRemaining;
       } else {
         const nextInstallment = installment || getNextInstallment(invoice);
 
         paymentType = "EMI Installment";
-
         amount = nextInstallment
-          ? roundMoney(
-              Number(nextInstallment.installmentAmount) -
-                Number(nextInstallment.paidAmount || 0),
-            ).toFixed(2)
-          : "";
+          ? Number(nextInstallment.installmentAmount) -
+            Number(nextInstallment.paidAmount || 0)
+          : 0;
 
-        setPaymentForm((previous) => ({
-          ...previous,
-          paymentType,
-          amount,
-          installmentNumber: String(nextInstallment?.installmentNumber || ""),
-        }));
-
-        setShowPaymentForm(true);
-        return;
+        installmentNumber = String(
+          nextInstallment?.installmentNumber || "",
+        );
       }
     }
 
     setPaymentForm({
       paymentType,
-      amount: String(amount),
+      amount: amount > 0 ? roundMoney(amount).toFixed(2) : "",
       paymentMethod: "UPI",
-      installmentNumber: "",
+      installmentNumber,
       transactionReference: "",
       paymentDate: today(),
       notes: "",
@@ -3425,34 +3629,34 @@ function Billing() {
   const handlePaymentTypeChange = (value) => {
     if (!selectedInvoice) return;
 
-    let amount = "";
+    let amount = 0;
     let installmentNumber = "";
 
     if (value === "Full Payment") {
-      amount = selectedInvoice.balanceDue;
+      amount = Number(selectedInvoice.balanceDue || 0);
     } else if (value === "Down Payment") {
       amount = Math.max(
         0,
         Number(selectedInvoice.downPayment || 0) -
           getDownPaymentPaid(selectedInvoice),
-      ).toFixed(2);
+      );
     } else if (value === "EMI Installment") {
       const installment = getNextInstallment(selectedInvoice);
 
-      installmentNumber = String(installment?.installmentNumber || "");
+      installmentNumber = String(
+        installment?.installmentNumber || "",
+      );
 
       amount = installment
-        ? (
-            Number(installment.installmentAmount) -
-            Number(installment.paidAmount || 0)
-          ).toFixed(2)
-        : "";
+        ? Number(installment.installmentAmount) -
+          Number(installment.paidAmount || 0)
+        : 0;
     }
 
     setPaymentForm((previous) => ({
       ...previous,
       paymentType: value,
-      amount: String(amount),
+      amount: amount > 0 ? roundMoney(amount).toFixed(2) : "",
       installmentNumber,
     }));
   };
@@ -3466,48 +3670,243 @@ function Billing() {
     }));
   };
 
-  // Record payment.
+  // --------------------------------------------------
+  // RECORD PAYMENT
+  // --------------------------------------------------
+
   const handleRecordPayment = async (event) => {
     event.preventDefault();
 
-    if (!selectedInvoice) return;
+    if (!selectedInvoice || !auth.currentUser) {
+      setError("Please sign in and select an invoice.");
+      return;
+    }
 
-    setError("");
-    setSuccess("");
+    const amount = Number(paymentForm.amount);
+
+    if (!Number.isFinite(amount) || amount <= 0) {
+      setError("Enter a valid payment amount.");
+      return;
+    }
+
+    if (!paymentForm.paymentDate || paymentForm.paymentDate > today()) {
+      setError("Enter a valid payment date.");
+      return;
+    }
+
+    if (amount > Number(selectedInvoice.balanceDue) + 0.01) {
+      setError("Payment cannot exceed the outstanding balance.");
+      return;
+    }
 
     try {
       setSaving(true);
+      setError("");
+      setSuccess("");
 
-      const payload = {
-        invoiceId: selectedInvoice._id,
-        amount: Number(paymentForm.amount),
-        paymentType: paymentForm.paymentType,
-        paymentMethod: paymentForm.paymentMethod,
-        transactionReference: paymentForm.transactionReference,
-        paymentDate: paymentForm.paymentDate,
-        notes: paymentForm.notes,
-      };
+      const invoiceRef = doc(db, "invoices", selectedInvoice.id);
+      const paymentRef = doc(collection(db, "payments"));
 
-      if (paymentForm.paymentType === "EMI Installment") {
-        payload.installmentNumber = Number(paymentForm.installmentNumber);
-      }
+      await runTransaction(db, async (transaction) => {
+        const invoiceSnapshot = await transaction.get(invoiceRef);
 
-      const response = await api.post("/payments", payload);
+        if (!invoiceSnapshot.exists()) {
+          throw new Error("Invoice not found.");
+        }
 
-      setSuccess(response.data.message || "Payment recorded successfully.");
+        const invoice = invoiceSnapshot.data();
+        const balance = Number(invoice.balanceDue || 0);
+
+        if (amount > balance + 0.01) {
+          throw new Error("Payment exceeds the current balance.");
+        }
+
+        let schedule = [...(invoice.emiSchedule || [])];
+        let updatedDownPaymentPaid = getDownPaymentPaid(selectedInvoice);
+
+        if (paymentForm.paymentType === "Down Payment") {
+          const remainingDownPayment =
+            Number(invoice.downPayment || 0) - updatedDownPaymentPaid;
+
+          if (amount > remainingDownPayment + 0.01) {
+            throw new Error("Payment exceeds the remaining down payment.");
+          }
+
+          updatedDownPaymentPaid = roundMoney(
+            updatedDownPaymentPaid + amount,
+          );
+        } else if (paymentForm.paymentType === "EMI Installment") {
+          const installmentIndex = schedule.findIndex(
+            (item) =>
+              Number(item.installmentNumber) ===
+              Number(paymentForm.installmentNumber),
+          );
+
+          if (installmentIndex === -1) {
+            throw new Error("EMI installment not found.");
+          }
+
+          const installment = { ...schedule[installmentIndex] };
+
+          const remaining =
+            Number(installment.installmentAmount) -
+            Number(installment.paidAmount || 0);
+
+          if (amount > remaining + 0.01) {
+            throw new Error("Payment exceeds the installment balance.");
+          }
+
+          installment.paidAmount = roundMoney(
+            Number(installment.paidAmount || 0) + amount,
+          );
+
+          installment.status =
+            installment.paidAmount >= installment.installmentAmount - 0.01
+              ? "Paid"
+              : "Partial";
+
+          schedule[installmentIndex] = installment;
+        }
+
+        const totalPaid = roundMoney(
+          Number(invoice.totalPaid || 0) + amount,
+        );
+
+        const balanceDue = Math.max(
+          0,
+          roundMoney(Number(invoice.totalPayable) - totalPaid),
+        );
+
+        const paymentStatus = getStatus(
+          totalPaid,
+          Number(invoice.totalPayable),
+          schedule,
+        );
+
+        transaction.set(paymentRef, {
+          invoiceId: selectedInvoice.id,
+          invoiceNumber: invoice.invoiceNumber,
+          customerId: invoice.customerId,
+          customerName: invoice.customerName,
+          customerPhone: invoice.customerPhone || "",
+
+          bikeId: invoice.bikeId,
+          brand: invoice.brand,
+          model: invoice.model,
+          registrationNumber: invoice.registrationNumber || "",
+
+          amount,
+          paymentType: paymentForm.paymentType,
+          paymentMethod: paymentForm.paymentMethod,
+          installmentNumber:
+            paymentForm.paymentType === "EMI Installment"
+              ? Number(paymentForm.installmentNumber)
+              : null,
+
+          transactionReference: paymentForm.transactionReference.trim(),
+          paymentDate: paymentForm.paymentDate,
+          notes: paymentForm.notes.trim(),
+
+          createdBy: auth.currentUser.uid,
+          createdAt: serverTimestamp(),
+        });
+
+        transaction.update(invoiceRef, {
+          totalPaid,
+          balanceDue,
+          paymentStatus,
+          emiSchedule: schedule,
+          updatedAt: serverTimestamp(),
+        });
+      });
+
+      setSuccess("Payment recorded successfully.");
 
       setShowPaymentForm(false);
       setSelectedInvoice(null);
 
       await fetchBillingData();
     } catch (err) {
-      console.error("Record payment error:", err);
-
-      setError(err.response?.data?.message || "Failed to record payment.");
+      console.error("Payment recording error:", err);
+      setError(err.message || "Unable to record payment.");
     } finally {
       setSaving(false);
     }
   };
+
+  // --------------------------------------------------
+  // PRINT INVOICE
+  // --------------------------------------------------
+
+  const printInvoice = (invoice) => {
+    const printWindow = window.open("", "_blank", "width=850,height=700");
+
+    if (!printWindow) {
+      setError("Please allow pop-ups to print the invoice.");
+      return;
+    }
+
+    const rows = [
+      ["Invoice Number", invoice.invoiceNumber],
+      ["Invoice Date", invoice.invoiceDate],
+      ["Customer", invoice.customerName],
+      ["Phone", invoice.customerPhone || "—"],
+      ["Bike", `${invoice.brand || ""} ${invoice.model || ""}`],
+      ["Registration Number", invoice.registrationNumber || "—"],
+      ["Bike Price", money(invoice.bikePrice)],
+      ["Payment Type", invoice.paymentType],
+      ["Down Payment", money(invoice.downPayment)],
+      ["Total Fees", money(invoice.totalFees)],
+      ["Total Interest", money(invoice.totalInterest)],
+      ["Total Payable", money(invoice.totalPayable)],
+      ["Amount Paid", money(invoice.totalPaid)],
+      ["Balance Due", money(invoice.balanceDue)],
+      ["Payment Status", invoice.paymentStatus],
+    ];
+
+    printWindow.document.write(`
+      <!DOCTYPE html>
+      <html>
+        <head>
+          <title>${invoice.invoiceNumber}</title>
+          <style>
+            body { font-family: Arial, sans-serif; padding: 35px; color: #172b45; }
+            h1 { margin-bottom: 5px; }
+            p { color: #64748b; }
+            table { width: 100%; border-collapse: collapse; margin-top: 25px; }
+            td { padding: 12px; border: 1px solid #dbe3ed; }
+            td:first-child { font-weight: bold; width: 40%; background: #f5f7fb; }
+            .footer { margin-top: 35px; text-align: center; }
+            @media print { button { display: none; } }
+          </style>
+        </head>
+        <body>
+          <h1>BikeLedger</h1>
+          <p>Two-Wheeler Billing Management System</p>
+          <h2>Customer Invoice</h2>
+          <table>
+            ${rows
+              .map(
+                ([label, value]) =>
+                  `<tr><td>${String(label)}</td><td>${String(value ?? "—")}</td></tr>`,
+              )
+              .join("")}
+          </table>
+          <div class="footer">
+            <p>Thank you for your business.</p>
+            <button onclick="window.print()">Print Invoice</button>
+          </div>
+        </body>
+      </html>
+    `);
+
+    printWindow.document.close();
+    printWindow.focus();
+  };
+
+  // --------------------------------------------------
+  // RENDER
+  // --------------------------------------------------
 
   return (
     <div className="billing-layout">
@@ -3517,9 +3916,7 @@ function Billing() {
         <div className="billing-header">
           <div>
             <p className="billing-eyebrow">FINANCE MANAGEMENT</p>
-
             <h1>Billing & EMI</h1>
-
             <p className="billing-subtitle">
               Manage invoices, showroom charges, installments and overdue
               payments.
@@ -3527,13 +3924,15 @@ function Billing() {
           </div>
 
           <button
+            type="button"
             className="billing-primary-btn"
             onClick={() => {
               setError("");
               setSuccess("");
+              resetInvoiceForm();
               setShowInvoiceForm(true);
             }}
-            disabled={availableBikes.length === 0}
+            disabled={availableBikes.length === 0 || loading}
           >
             + Create Invoice
           </button>
@@ -3547,7 +3946,6 @@ function Billing() {
           <div className="billing-alert billing-alert-success">{success}</div>
         )}
 
-        {/* Dashboard statistics */}
         <section className="billing-stats">
           <div className="billing-stat-card">
             <div className="billing-stat-icon invoice-icon">▤</div>
@@ -3582,7 +3980,6 @@ function Billing() {
           </div>
         </section>
 
-        {/* Main tabs */}
         <div className="billing-tabs">
           <button
             className={activeTab === "invoices" ? "active" : ""}
@@ -3599,7 +3996,8 @@ function Billing() {
           </button>
         </div>
 
-        {/* Invoice list */}
+        {/* INVOICES */}
+
         {activeTab === "invoices" && (
           <section className="billing-content">
             <div className="billing-toolbar">
@@ -3660,25 +4058,23 @@ function Billing() {
 
                   <tbody>
                     {filteredInvoices.map((invoice) => (
-                      <React.Fragment key={invoice._id}>
+                      <React.Fragment key={invoice.id}>
                         <tr>
                           <td>
                             <strong>{invoice.invoiceNumber}</strong>
-                            <small>{dateText(invoice.invoiceDate)}</small>
+                            <small>{invoice.invoiceDate}</small>
                           </td>
 
                           <td>
-                            <strong>{invoice.customer?.name || "—"}</strong>
-                            <small>{invoice.customer?.phone || ""}</small>
+                            <strong>{invoice.customerName || "—"}</strong>
+                            <small>{invoice.customerPhone || ""}</small>
                           </td>
 
                           <td>
                             <strong>
-                              {invoice.bike?.brand} {invoice.bike?.model}
+                              {invoice.brand} {invoice.model}
                             </strong>
-                            <small>
-                              {invoice.bike?.registrationNumber || ""}
-                            </small>
+                            <small>{invoice.registrationNumber || ""}</small>
                           </td>
 
                           <td>
@@ -3698,9 +4094,7 @@ function Billing() {
                           </td>
 
                           <td>
-                            <span
-                              className={statusClass(invoice.paymentStatus)}
-                            >
+                            <span className={statusClass(invoice.paymentStatus)}>
                               {invoice.paymentStatus}
                             </span>
                           </td>
@@ -3712,13 +4106,13 @@ function Billing() {
                                   className="billing-view-btn"
                                   onClick={() =>
                                     setExpandedInvoiceId(
-                                      expandedInvoiceId === invoice._id
+                                      expandedInvoiceId === invoice.id
                                         ? null
-                                        : invoice._id,
+                                        : invoice.id,
                                     )
                                   }
                                 >
-                                  {expandedInvoiceId === invoice._id
+                                  {expandedInvoiceId === invoice.id
                                     ? "Hide Schedule"
                                     : "View EMI"}
                                 </button>
@@ -3734,22 +4128,26 @@ function Billing() {
                               >
                                 Record Payment
                               </button>
+
+                              <button
+                                className="billing-view-btn"
+                                onClick={() => printInvoice(invoice)}
+                              >
+                                Print Invoice
+                              </button>
                             </div>
                           </td>
                         </tr>
 
-                        {/* EMI schedule */}
-                        {expandedInvoiceId === invoice._id && (
-                          <tr key={`${invoice._id}-schedule`}>
+                        {expandedInvoiceId === invoice.id && (
+                          <tr>
                             <td colSpan="9">
                               <div className="billing-schedule">
                                 <div className="billing-schedule-header">
                                   <div>
                                     <h3>EMI Installment Schedule</h3>
-
                                     <p>
-                                      {invoice.tenureMonths} installments
-                                      {" · "}
+                                      {invoice.tenureMonths} installments ·{" "}
                                       {invoice.annualInterestRate}% annual
                                       interest
                                     </p>
@@ -3763,16 +4161,13 @@ function Billing() {
                                 <div className="billing-fee-summary">
                                   <div>
                                     <span>Down Payment</span>
-                                    <strong>
-                                      {money(invoice.downPayment)}
-                                    </strong>
+                                    <strong>{money(invoice.downPayment)}</strong>
                                   </div>
 
                                   <div>
                                     <span>Processing Fee</span>
                                     <strong>
-                                      {money(invoice.processingFeeAmount)} (
-                                      {invoice.processingFeePercentage}%)
+                                      {money(invoice.processingFeeAmount)}
                                     </strong>
                                   </div>
 
@@ -3828,49 +4223,45 @@ function Billing() {
                                               Number(item.paidAmount || 0),
                                           );
 
+                                          const displayStatus =
+                                            item.status !== "Paid" &&
+                                            item.dueDate < today() &&
+                                            remaining > 0.01
+                                              ? "Overdue"
+                                              : item.status;
+
                                           return (
-                                            <tr
-                                              key={
-                                                item._id ||
-                                                item.installmentNumber
-                                              }
-                                            >
-                                              <td>#{item.installmentNumber}</td>
-
-                                              <td>{dateText(item.dueDate)}</td>
-
+                                            <tr key={item.installmentNumber}>
+                                              <td>
+                                                #{item.installmentNumber}
+                                              </td>
+                                              <td>{item.dueDate}</td>
                                               <td>
                                                 {money(item.principalAmount)}
                                               </td>
-
                                               <td>
                                                 {money(item.interestAmount)}
                                               </td>
-
                                               <td>
                                                 {money(item.installmentAmount)}
                                               </td>
-
                                               <td className="billing-paid-amount">
                                                 {money(item.paidAmount)}
                                               </td>
-
                                               <td className="billing-due-amount">
                                                 {money(remaining)}
                                               </td>
-
                                               <td>
                                                 <span
                                                   className={statusClass(
-                                                    item.status,
+                                                    displayStatus,
                                                   )}
                                                 >
-                                                  {item.status}
+                                                  {displayStatus}
                                                 </span>
                                               </td>
-
                                               <td>
-                                                {item.status !== "Paid" && (
+                                                {remaining > 0.01 && (
                                                   <button
                                                     className="billing-action-btn"
                                                     onClick={() =>
@@ -3879,7 +4270,6 @@ function Billing() {
                                                         item,
                                                       )
                                                     }
-                                                    disabled={remaining <= 0}
                                                   >
                                                     Pay
                                                   </button>
@@ -3905,7 +4295,8 @@ function Billing() {
           </section>
         )}
 
-        {/* Payment history */}
+        {/* PAYMENT HISTORY */}
+
         {activeTab === "payments" && (
           <section className="billing-content">
             <div className="billing-toolbar">
@@ -3944,21 +4335,16 @@ function Billing() {
 
                   <tbody>
                     {payments.map((payment) => (
-                      <tr key={payment._id}>
-                        <td>{dateText(payment.paymentDate)}</td>
-
+                      <tr key={payment.id}>
+                        <td>{payment.paymentDate}</td>
                         <td>
-                          <strong>{payment.customer?.name || "—"}</strong>
-                          <small>{payment.customer?.phone || ""}</small>
+                          <strong>{payment.customerName || "—"}</strong>
+                          <small>{payment.customerPhone || ""}</small>
                         </td>
-
-                        <td>{payment.invoice?.invoiceNumber || "—"}</td>
-
+                        <td>{payment.invoiceNumber || "—"}</td>
                         <td>{payment.paymentType}</td>
                         <td>{payment.paymentMethod}</td>
-
                         <td>{payment.transactionReference || "—"}</td>
-
                         <td className="billing-paid-amount">
                           {money(payment.amount)}
                         </td>
@@ -3972,9 +4358,13 @@ function Billing() {
         )}
       </main>
 
-      {/* Create invoice modal */}
+      {/* CREATE INVOICE MODAL */}
+
       {showInvoiceForm && (
-        <div className="billing-modal-overlay" onClick={closeForms}>
+        <div
+          className="billing-modal-overlay"
+          onClick={closeForms}
+        >
           <div
             className="billing-modal"
             onClick={(event) => event.stopPropagation()}
@@ -3995,7 +4385,9 @@ function Billing() {
             </div>
 
             {error && (
-              <div className="billing-alert billing-alert-error">{error}</div>
+              <div className="billing-alert billing-alert-error">
+                {error}
+              </div>
             )}
 
             <form onSubmit={handleCreateInvoice}>
@@ -4011,16 +4403,19 @@ function Billing() {
                   <option value="">Choose a registered bike</option>
 
                   {availableBikes.map((bike) => (
-                    <option key={bike._id} value={bike._id}>
+                    <option key={bike.id} value={bike.id}>
                       {bike.brand} {bike.model} —{" "}
-                      {bike.customer?.name || "Customer"} —{" "}
+                      {bike.customerName || "Customer"} —{" "}
                       {bike.registrationNumber || "No registration"}
                     </option>
                   ))}
                 </select>
 
                 {availableBikes.length === 0 && (
-                  <small>No uninvoiced registered bikes are available.</small>
+                  <small>
+                    No uninvoiced registered bikes are available. Register a
+                    bike first.
+                  </small>
                 )}
               </div>
 
@@ -4028,12 +4423,12 @@ function Billing() {
                 <div className="billing-selected-bike">
                   <div>
                     <span>Customer</span>
-                    <strong>{selectedBike.customer?.name || "—"}</strong>
+                    <strong>{selectedBike.customerName || "—"}</strong>
                   </div>
 
                   <div>
                     <span>Phone</span>
-                    <strong>{selectedBike.customer?.phone || "—"}</strong>
+                    <strong>{selectedBike.customerPhone || "—"}</strong>
                   </div>
 
                   <div>
@@ -4066,7 +4461,6 @@ function Billing() {
                       checked={invoiceForm.paymentType === "Full Payment"}
                       onChange={handleInvoiceChange}
                     />
-
                     <span>
                       <strong>Full Payment</strong>
                       <small>Pay the complete bike price at once.</small>
@@ -4085,7 +4479,6 @@ function Billing() {
                       checked={invoiceForm.paymentType === "EMI"}
                       onChange={handleInvoiceChange}
                     />
-
                     <span>
                       <strong>EMI Payment</strong>
                       <small>Configure charges and monthly installments.</small>
@@ -4094,15 +4487,15 @@ function Billing() {
                 </div>
               </div>
 
-              {/* EMI configuration */}
               {invoiceForm.paymentType === "EMI" && (
                 <>
-                  <h3 className="billing-section-heading">EMI Configuration</h3>
+                  <h3 className="billing-section-heading">
+                    EMI Configuration
+                  </h3>
 
                   <div className="billing-form-grid">
                     <div className="billing-form-group">
                       <label>Down Payment (₹) *</label>
-
                       <input
                         type="number"
                         name="downPayment"
@@ -4117,7 +4510,6 @@ function Billing() {
 
                     <div className="billing-form-group">
                       <label>Tenure (Months) *</label>
-
                       <select
                         name="tenureMonths"
                         value={invoiceForm.tenureMonths}
@@ -4135,7 +4527,6 @@ function Billing() {
 
                     <div className="billing-form-group">
                       <label>Annual Interest Rate (%) *</label>
-
                       <input
                         type="number"
                         name="annualInterestRate"
@@ -4146,15 +4537,10 @@ function Billing() {
                         onChange={handleInvoiceChange}
                         required
                       />
-
-                      <small>
-                        Staff can set a different annual rate for each customer.
-                      </small>
                     </div>
 
                     <div className="billing-form-group">
                       <label>First EMI Due Date *</label>
-
                       <input
                         type="date"
                         name="firstDueDate"
@@ -4164,16 +4550,9 @@ function Billing() {
                         required
                       />
                     </div>
-                  </div>
 
-                  <h3 className="billing-section-heading">
-                    Staff-configured Charges
-                  </h3>
-
-                  <div className="billing-form-grid">
                     <div className="billing-form-group">
                       <label>Processing Fee (%) *</label>
-
                       <input
                         type="number"
                         name="processingFeePercentage"
@@ -4188,7 +4567,6 @@ function Billing() {
 
                     <div className="billing-form-group">
                       <label>Documentation Fee (₹) *</label>
-
                       <input
                         type="number"
                         name="documentationFee"
@@ -4202,7 +4580,6 @@ function Billing() {
 
                     <div className="billing-form-group">
                       <label>Other Charges (₹)</label>
-
                       <input
                         type="number"
                         name="otherChargesAmount"
@@ -4215,7 +4592,6 @@ function Billing() {
 
                     <div className="billing-form-group">
                       <label>Other Charges Description</label>
-
                       <input
                         type="text"
                         name="otherChargesDescription"
@@ -4227,14 +4603,12 @@ function Billing() {
                     </div>
                   </div>
 
-                  {/* Live EMI preview */}
                   <div className="billing-emi-preview">
                     <div className="billing-preview-heading">
                       <div>
                         <h3>EMI Calculation Preview</h3>
                         <p>Estimated customer payment details</p>
                       </div>
-
                       <span className="billing-preview-chip">
                         Annual Simple Interest
                       </span>
@@ -4251,9 +4625,12 @@ function Billing() {
                     </div>
 
                     <div className="billing-preview-row">
-                      <span>
-                        Processing Fee ({invoiceForm.processingFeePercentage}%)
-                      </span>
+                      <span>Financed Balance</span>
+                      <strong>{money(financedBalance)}</strong>
+                    </div>
+
+                    <div className="billing-preview-row">
+                      <span>Processing Fee</span>
                       <strong>{money(processingFeeAmount)}</strong>
                     </div>
 
@@ -4293,9 +4670,8 @@ function Billing() {
                     </div>
 
                     <small>
-                      Calculation: financed balance plus applicable fees, plus
-                      annual simple interest for the selected tenure. The
-                      backend generates the official installment schedule.
+                      Interest is calculated using annual simple interest.
+                      The final schedule is saved with the invoice.
                     </small>
                   </div>
                 </>
@@ -4303,7 +4679,6 @@ function Billing() {
 
               <div className="billing-form-group">
                 <label>Notes</label>
-
                 <textarea
                   name="notes"
                   rows="3"
@@ -4330,10 +4705,9 @@ function Billing() {
                     saving ||
                     !invoiceForm.bikeId ||
                     (invoiceForm.paymentType === "EMI" &&
-                      (!invoiceForm.downPayment ||
+                      (invoiceForm.downPayment === "" ||
+                        downPayment < 0 ||
                         downPayment >= bikePrice ||
-                        Number(invoiceForm.annualInterestRate) < 0 ||
-                        Number(invoiceForm.tenureMonths) < 1 ||
                         !invoiceForm.firstDueDate))
                   }
                 >
@@ -4345,7 +4719,8 @@ function Billing() {
         </div>
       )}
 
-      {/* Record payment modal */}
+      {/* RECORD PAYMENT MODAL */}
+
       {showPaymentForm && selectedInvoice && (
         <div className="billing-modal-overlay" onClick={closeForms}>
           <div
@@ -4368,7 +4743,9 @@ function Billing() {
             </div>
 
             {error && (
-              <div className="billing-alert billing-alert-error">{error}</div>
+              <div className="billing-alert billing-alert-error">
+                {error}
+              </div>
             )}
 
             <div className="billing-payment-summary">
@@ -4376,17 +4753,14 @@ function Billing() {
                 <span>Invoice</span>
                 <strong>{selectedInvoice.invoiceNumber}</strong>
               </div>
-
               <div>
                 <span>Customer</span>
-                <strong>{selectedInvoice.customer?.name || "—"}</strong>
+                <strong>{selectedInvoice.customerName || "—"}</strong>
               </div>
-
               <div>
                 <span>Total Payable</span>
                 <strong>{money(selectedInvoice.totalPayable)}</strong>
               </div>
-
               <div>
                 <span>Balance Due</span>
                 <strong className="billing-due-amount">
@@ -4399,16 +4773,13 @@ function Billing() {
               {selectedInvoice.paymentType === "EMI" && (
                 <div className="billing-form-group">
                   <label>Payment Type *</label>
-
                   <select
-                    name="paymentType"
                     value={paymentForm.paymentType}
                     onChange={(event) =>
                       handlePaymentTypeChange(event.target.value)
                     }
                   >
                     <option value="Down Payment">Down Payment</option>
-
                     <option value="EMI Installment">EMI Installment</option>
                   </select>
                 </div>
@@ -4417,7 +4788,6 @@ function Billing() {
               {paymentForm.paymentType === "EMI Installment" && (
                 <div className="billing-form-group">
                   <label>Installment Number</label>
-
                   <input
                     type="number"
                     value={paymentForm.installmentNumber}
@@ -4429,7 +4799,6 @@ function Billing() {
               <div className="billing-form-grid">
                 <div className="billing-form-group">
                   <label>Payment Amount (₹) *</label>
-
                   <input
                     type="number"
                     name="amount"
@@ -4444,7 +4813,6 @@ function Billing() {
 
                 <div className="billing-form-group">
                   <label>Payment Method *</label>
-
                   <select
                     name="paymentMethod"
                     value={paymentForm.paymentMethod}
@@ -4461,7 +4829,6 @@ function Billing() {
 
                 <div className="billing-form-group">
                   <label>Payment Date *</label>
-
                   <input
                     type="date"
                     name="paymentDate"
@@ -4474,7 +4841,6 @@ function Billing() {
 
                 <div className="billing-form-group">
                   <label>Transaction Reference</label>
-
                   <input
                     type="text"
                     name="transactionReference"
@@ -4487,7 +4853,6 @@ function Billing() {
 
               <div className="billing-form-group">
                 <label>Notes</label>
-
                 <textarea
                   name="notes"
                   rows="2"
@@ -4528,3 +4893,4 @@ function Billing() {
 }
 
 export default Billing;
+
