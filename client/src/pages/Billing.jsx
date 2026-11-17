@@ -5564,7 +5564,11 @@ function Billing() {
           balanceDue: initialBalance,
 
           paymentStatus:
-            initialBalance <= 0.01 ? "Paid" : "Partial",
+            initialBalance <= 0.01
+              ? "Paid"
+              : initialPaid > 0
+                ? "Partial"
+                : "Pending",
 
           createdBy: auth.currentUser.uid,
           createdAt: serverTimestamp(),
@@ -5757,22 +5761,17 @@ function Billing() {
     /* =======================================================
      RECORD PAYMENT
   ======================================================= */
-
   const handleRecordPayment = async (event) => {
     event.preventDefault();
-
     if (!selectedInvoice || !auth.currentUser) {
       setError("Please sign in and select an invoice.");
       return;
     }
-
-    const amount = roundMoney(Number(paymentForm.amount));
-
+    let amount = roundMoney(Number(paymentForm.amount));
     if (!Number.isFinite(amount) || amount <= 0) {
       setError("Enter a valid payment amount.");
       return;
     }
-
     if (
       !paymentForm.paymentDate ||
       paymentForm.paymentDate > today()
@@ -5780,181 +5779,264 @@ function Billing() {
       setError("Enter a valid payment date.");
       return;
     }
-
     if (!paymentForm.paymentMethod) {
       setError("Select a payment method.");
       return;
     }
-
     try {
       setSaving(true);
       setError("");
       setSuccess("");
-
       const invoiceRef = doc(
         db,
         "invoices",
         selectedInvoice.id
       );
-
       const paymentRef = doc(collection(db, "payments"));
-
       await runTransaction(db, async (transaction) => {
-        const invoiceSnapshot =
-          await transaction.get(invoiceRef);
-
+        const invoiceSnapshot = await transaction.get(invoiceRef);
         if (!invoiceSnapshot.exists()) {
           throw new Error("Invoice not found.");
         }
-
         const invoice = invoiceSnapshot.data();
-        const currentBalance = Number(
-          invoice.balanceDue || 0
+
+      const totalPayable = roundMoney(
+        Number(invoice.totalPayable || 0)
+      );
+
+      const previousPaid = roundMoney(
+        Number(invoice.totalPaid || 0)
+      );
+
+      const currentBalance = roundMoney(
+        Number(
+          invoice.balanceDue ?? (totalPayable - previousPaid)
+        )
+      );
+
+      if (currentBalance <= 0.01) {
+        throw new Error("This invoice is already fully paid.");
+      }
+
+      if (amount > currentBalance + 0.01) {
+        throw new Error(
+          "Payment cannot exceed the outstanding balance."
+        );
+      }
+
+      const isFullPayment =
+        paymentForm.paymentType === "Full Payment";
+
+      // FULL PAYMENT MUST CLEAR THE ENTIRE BALANCE.
+      if (
+        isFullPayment &&
+        Math.abs(amount - currentBalance) > 0.01
+      ) {
+        throw new Error(
+          "Full Payment must equal the entire outstanding balance."
+        );
+      }
+
+      // Keep the settled amount local to this transaction attempt.
+      // Firestore may retry the callback when another write happens.
+      const recordedAmount = isFullPayment
+        ? currentBalance
+        : amount;
+
+      let schedule = Array.isArray(invoice.emiSchedule)
+        ? invoice.emiSchedule.map((item) => ({ ...item }))
+        : [];
+
+      let updatedDownPaymentPaid = Number(
+        invoice.downPaymentPaid ??
+          getDownPaymentPaid(selectedInvoice)
+      );
+
+      // DOWN PAYMENT
+      if (paymentForm.paymentType === "Down Payment") {
+        const remainingDownPayment = roundMoney(
+          Number(invoice.downPayment || 0) -
+            updatedDownPaymentPaid
         );
 
-        if (amount > currentBalance + 0.01) {
+        if (amount > remainingDownPayment + 0.01) {
           throw new Error(
-            "Payment cannot exceed the current outstanding balance."
+            "Payment exceeds the remaining down payment."
           );
         }
 
-        let schedule = Array.isArray(invoice.emiSchedule)
-          ? invoice.emiSchedule.map((item) => ({ ...item }))
-          : [];
+        updatedDownPaymentPaid = roundMoney(
+          updatedDownPaymentPaid + amount
+        );
+      }
 
-        let updatedDownPaymentPaid = Number(
-          invoice.downPaymentPaid ??
-            getDownPaymentPaid(selectedInvoice)
+      // EMI INSTALLMENT
+      else if (
+        paymentForm.paymentType === "EMI Installment"
+      ) {
+        const installmentIndex = schedule.findIndex(
+          (item) =>
+            Number(item.installmentNumber) ===
+            Number(paymentForm.installmentNumber)
         );
 
-        if (paymentForm.paymentType === "Down Payment") {
-          const remainingDownPayment = Math.max(
-            0,
-            Number(invoice.downPayment || 0) -
-              updatedDownPaymentPaid
-          );
+        if (installmentIndex === -1) {
+          throw new Error("EMI installment not found.");
+        }
 
-          if (amount > remainingDownPayment + 0.01) {
-            throw new Error(
-              "Payment exceeds the remaining down payment."
-            );
-          }
+        const installment = {
+          ...schedule[installmentIndex],
+        };
 
-          updatedDownPaymentPaid = roundMoney(
-            updatedDownPaymentPaid + amount
+        const remaining = roundMoney(
+          Number(installment.installmentAmount) -
+            Number(installment.paidAmount || 0)
+        );
+
+        if (amount > remaining + 0.01) {
+          throw new Error(
+            "Payment exceeds the remaining installment amount."
           );
-        } else if (
-          paymentForm.paymentType === "EMI Installment"
+        }
+
+        installment.paidAmount = roundMoney(
+          Number(installment.paidAmount || 0) + amount
+        );
+
+        if (
+          installment.paidAmount >=
+          Number(installment.installmentAmount) - 0.01
         ) {
-          const installmentIndex = schedule.findIndex(
-            (item) =>
-              Number(item.installmentNumber) ===
-              Number(paymentForm.installmentNumber)
+          installment.paidAmount = Number(
+            installment.installmentAmount
           );
-
-          if (installmentIndex === -1) {
-            throw new Error("EMI installment not found.");
-          }
-
-          const installment = {
-            ...schedule[installmentIndex],
-          };
-
-          const remaining =
-            Number(installment.installmentAmount) -
-            Number(installment.paidAmount || 0);
-
-          if (amount > remaining + 0.01) {
-            throw new Error(
-              "Payment exceeds the remaining installment amount."
-            );
-          }
-
-          installment.paidAmount = roundMoney(
-            Number(installment.paidAmount || 0) + amount
-          );
-
-          installment.status =
-            installment.paidAmount >=
-            Number(installment.installmentAmount) - 0.01
-              ? "Paid"
-              : "Partial";
-
-          schedule[installmentIndex] = installment;
+          installment.status = "Paid";
+          installment.paidDate = paymentForm.paymentDate;
+        } else {
+          installment.status = "Partial";
         }
 
-        const totalPaid = roundMoney(
-          Number(invoice.totalPaid || 0) + amount
+        schedule[installmentIndex] = installment;
+      }
+
+      // FULL PAYMENT OF AN EMI INVOICE:
+      // Settle down payment and all remaining installments.
+      if (
+        isFullPayment &&
+        invoice.paymentType === "EMI"
+      ) {
+        updatedDownPaymentPaid = Number(
+          invoice.downPayment || 0
         );
 
-        const balanceDue = Math.max(
+        schedule = schedule.map((item) => ({
+          ...item,
+          paidAmount: Number(item.installmentAmount || 0),
+          status: "Paid",
+          paidDate: paymentForm.paymentDate,
+        }));
+      }
+
+      // CALCULATE FINAL PAYMENT TOTALS
+      let totalPaid;
+      let balanceDue;
+      let paymentStatus;
+
+      if (isFullPayment) {
+        // Force exact settlement to avoid floating-point
+        // rounding problems.
+        totalPaid = totalPayable;
+        balanceDue = 0;
+        paymentStatus = "Paid";
+      } else {
+        totalPaid = roundMoney(previousPaid + amount);
+
+        balanceDue = Math.max(
           0,
-          roundMoney(
-            Number(invoice.totalPayable) - totalPaid
-          )
+          roundMoney(totalPayable - totalPaid)
         );
 
-        const paymentStatus = getStatus(
-          totalPaid,
-          Number(invoice.totalPayable),
-          schedule
-        );
+        if (balanceDue <= 0.01) {
+          totalPaid = totalPayable;
+          balanceDue = 0;
+          paymentStatus = "Paid";
+        } else {
+          paymentStatus = getStatus(
+            totalPaid,
+            totalPayable,
+            schedule
+          );
+        }
+      }
 
-        transaction.set(paymentRef, {
-          invoiceId: selectedInvoice.id,
-          invoiceNumber: invoice.invoiceNumber,
+      // CREATE PAYMENT RECORD
+      transaction.set(paymentRef, {
+        invoiceId: selectedInvoice.id,
+        invoiceNumber: invoice.invoiceNumber,
 
-          customerId: invoice.customerId,
-          customerName: invoice.customerName,
-          customerPhone: invoice.customerPhone || "",
+        customerId: invoice.customerId,
+        customerName: invoice.customerName,
+        customerPhone: invoice.customerPhone || "",
 
-          bikeId: invoice.bikeId,
-          brand: invoice.brand || "",
-          model: invoice.model || "",
-          registrationNumber:
-            invoice.registrationNumber || "",
+        bikeId: invoice.bikeId,
+        brand: invoice.brand || "",
+        model: invoice.model || "",
+        registrationNumber:
+          invoice.registrationNumber || "",
 
-          amount,
-          paymentType: paymentForm.paymentType,
-          paymentMethod: paymentForm.paymentMethod,
+        amount: roundMoney(recordedAmount),
+        paymentType: paymentForm.paymentType,
+        paymentMethod: paymentForm.paymentMethod,
 
-          installmentNumber:
-            paymentForm.paymentType === "EMI Installment"
-              ? Number(paymentForm.installmentNumber)
-              : null,
+        installmentNumber:
+          paymentForm.paymentType === "EMI Installment"
+            ? Number(paymentForm.installmentNumber)
+            : null,
 
-          transactionReference:
-            paymentForm.transactionReference.trim(),
+        transactionReference:
+          paymentForm.transactionReference.trim(),
 
-          paymentDate: paymentForm.paymentDate,
-          notes: paymentForm.notes.trim(),
+        paymentDate: paymentForm.paymentDate,
+        notes: paymentForm.notes.trim(),
 
-          createdBy: auth.currentUser.uid,
-          createdAt: serverTimestamp(),
-        });
-
-        transaction.update(invoiceRef, {
-          totalPaid,
-          balanceDue,
-          paymentStatus,
-          downPaymentPaid: updatedDownPaymentPaid,
-          emiSchedule: schedule,
-          updatedAt: serverTimestamp(),
-        });
+        createdBy: auth.currentUser.uid,
+        createdAt: serverTimestamp(),
       });
 
-      setSuccess("Payment recorded successfully.");
-      setShowPaymentForm(false);
-      setSelectedInvoice(null);
+      // UPDATE INVOICE AND PAYMENT STATUS ATOMICALLY
+      transaction.update(invoiceRef, {
+        totalPaid,
+        balanceDue,
+        paymentStatus,
+        downPaymentPaid: updatedDownPaymentPaid,
+        emiSchedule: schedule,
+        updatedAt: serverTimestamp(),
+      });
+    });
 
-      await fetchBillingData();
-    } catch (err) {
-      console.error("Payment recording error:", err);
-      setError(err.message || "Unable to record payment.");
-    } finally {
-      setSaving(false);
-    }
-  };
+    setSuccess(
+      paymentForm.paymentType === "Full Payment"
+        ? "Full payment recorded successfully! Invoice status updated to PAID."
+        : "Payment recorded successfully."
+    );
+
+    setShowPaymentForm(false);
+    setSelectedInvoice(null);
+
+    await fetchBillingData();
+
+  } catch (err) {
+    console.error("Payment recording error:", err);
+
+    setError(
+      err.message || "Unable to record payment."
+    );
+
+  } finally {
+    setSaving(false);
+  }
+};
+
 
   /* =======================================================
      PRINT INVOICE
