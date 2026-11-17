@@ -1,10 +1,7 @@
 import { useEffect, useState } from "react";
 import {
   collection,
-  addDoc,
   getDocs,
-  updateDoc,
-  deleteDoc,
   doc,
   serverTimestamp,
   runTransaction,
@@ -33,6 +30,7 @@ const Customers = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
+  const [phoneIndexReady, setPhoneIndexReady] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -53,6 +51,7 @@ const Customers = () => {
   const fetchCustomers = async () => {
     try {
       setLoading(true);
+      setPhoneIndexReady(false);
       setError("");
 
       if (!auth.currentUser) {
@@ -66,6 +65,60 @@ const Customers = () => {
         id: item.id,
         ...item.data(),
       }));
+
+      // Backfill the phone index from existing customer documents. This is
+      // important because customers created before this validation existed
+      // are not yet represented in customerPhoneIndex.
+      const phoneGroups = new Map();
+
+      customerList.forEach((customer) => {
+        const phone = String(customer.phone || "").replace(/\D/g, "");
+
+        if (!/^\d{10}$/.test(phone)) return;
+
+        const owners = phoneGroups.get(phone) || [];
+        owners.push(customer.id);
+        phoneGroups.set(phone, owners);
+      });
+
+      const readIndexedOwners = (data) => {
+        if (Array.isArray(data?.customerIds)) return data.customerIds;
+        return data?.customerId ? [data.customerId] : [];
+      };
+
+      await Promise.all(
+        Array.from(phoneGroups.entries()).map(async ([phone, customerIds]) => {
+          const phoneRef = doc(db, "customerPhoneIndex", phone);
+
+          await runTransaction(db, async (transaction) => {
+            const phoneSnapshot = await transaction.get(phoneRef);
+            const existingOwners = phoneSnapshot.exists()
+              ? readIndexedOwners(phoneSnapshot.data())
+              : [];
+
+            const mergedOwners = Array.from(
+              new Set([...existingOwners, ...customerIds])
+            );
+
+            // Avoid repeated writes after the initial backfill.
+            const alreadyIndexed =
+              phoneSnapshot.exists() &&
+              customerIds.every((id) => existingOwners.includes(id)) &&
+              Array.isArray(phoneSnapshot.data().customerIds);
+
+            if (alreadyIndexed) return;
+
+            transaction.set(phoneRef, {
+              phone,
+              customerIds: mergedOwners,
+              customerId: mergedOwners.length === 1 ? mergedOwners[0] : null,
+              conflicted: mergedOwners.length > 1,
+              updatedAt: serverTimestamp(),
+              migratedAt: serverTimestamp(),
+            });
+          });
+        })
+      );
 
       // Sort newest customers first
       customerList.sort((a, b) => {
@@ -81,6 +134,7 @@ const Customers = () => {
       });
 
       setCustomers(customerList);
+      setPhoneIndexReady(true);
     } catch (err) {
       console.error("Fetch customers error:", err);
 
@@ -231,14 +285,17 @@ const Customers = () => {
           throw new Error("Customer not found. Refresh and try again.");
         }
 
-        if (phoneSnapshot.exists()) {
-          const reservedCustomerId = phoneSnapshot.data().customerId;
+        const indexedOwners = phoneSnapshot.exists()
+          ? readIndexedOwners(phoneSnapshot.data())
+          : [];
+        const otherOwners = indexedOwners.filter(
+          (ownerId) => ownerId !== customerRef.id
+        );
 
-          if (reservedCustomerId !== customerRef.id) {
-            throw new Error(
-              "This mobile number is already registered to another customer. Please enter a different number."
-            );
-          }
+        if (otherOwners.length > 0) {
+          throw new Error(
+            "This mobile number is already registered to another customer. Please enter a different number."
+          );
         }
 
         if (editingId) {
@@ -246,8 +303,6 @@ const Customers = () => {
             customerSnapshot.data().phone || ""
           ).replace(/\D/g, "");
 
-          // Do not let an old customer's number reservation be removed if
-          // it has already been reassigned to another record.
           if (previousPhone && previousPhone !== normalizedPhone) {
             const previousPhoneRef = doc(
               db,
@@ -256,11 +311,26 @@ const Customers = () => {
             );
             const previousPhoneSnapshot = await transaction.get(previousPhoneRef);
 
-            if (
-              previousPhoneSnapshot.exists() &&
-              previousPhoneSnapshot.data().customerId === customerRef.id
-            ) {
-              transaction.delete(previousPhoneRef);
+            if (previousPhoneSnapshot.exists()) {
+              const previousOwners = readIndexedOwners(
+                previousPhoneSnapshot.data()
+              );
+              const remainingOwners = previousOwners.filter(
+                (ownerId) => ownerId !== customerRef.id
+              );
+
+              if (remainingOwners.length === 0) {
+                transaction.delete(previousPhoneRef);
+              } else {
+                transaction.set(previousPhoneRef, {
+                  phone: previousPhone,
+                  customerIds: remainingOwners,
+                  customerId:
+                    remainingOwners.length === 1 ? remainingOwners[0] : null,
+                  conflicted: remainingOwners.length > 1,
+                  updatedAt: serverTimestamp(),
+                });
+              }
             }
           }
 
@@ -275,7 +345,9 @@ const Customers = () => {
 
         transaction.set(phoneRef, {
           customerId: customerRef.id,
+          customerIds: [customerRef.id],
           phone: normalizedPhone,
+          conflicted: false,
           updatedAt: serverTimestamp(),
           createdBy: auth.currentUser.uid,
         });
@@ -337,11 +409,24 @@ const Customers = () => {
           const phoneRef = doc(db, "customerPhoneIndex", phone);
           const phoneSnapshot = await transaction.get(phoneRef);
 
-          if (
-            phoneSnapshot.exists() &&
-            phoneSnapshot.data().customerId === id
-          ) {
-            transaction.delete(phoneRef);
+          if (phoneSnapshot.exists()) {
+            const owners = readIndexedOwners(phoneSnapshot.data());
+            const remainingOwners = owners.filter(
+              (ownerId) => ownerId !== id
+            );
+
+            if (remainingOwners.length === 0) {
+              transaction.delete(phoneRef);
+            } else {
+              transaction.set(phoneRef, {
+                phone,
+                customerIds: remainingOwners,
+                customerId:
+                  remainingOwners.length === 1 ? remainingOwners[0] : null,
+                conflicted: remainingOwners.length > 1,
+                updatedAt: serverTimestamp(),
+              });
+            }
           }
         }
 
@@ -549,10 +634,12 @@ const Customers = () => {
                 <button
                   type="submit"
                   className="save-button"
-                  disabled={saving}
+                  disabled={saving || !phoneIndexReady}
                 >
                   {saving
                     ? "Saving..."
+                    : !phoneIndexReady
+                      ? "Checking Phone Numbers..."
                     : editingId
                       ? "Update Customer"
                       : "Save Customer"}
