@@ -755,10 +755,10 @@
 
 // export default Bikes;
 
+
 import { useEffect, useMemo, useState } from "react";
 
 import {
-  addDoc,
   collection,
   deleteDoc,
   doc,
@@ -786,6 +786,16 @@ const emptyForm = {
   bikePrice: "",
 };
 
+// Use the browser's local date instead of UTC.
+const getLocalDate = () => {
+  const date = new Date();
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+
+  return `${year}-${month}-${day}`;
+};
+
 const Bikes = () => {
   const [bikes, setBikes] = useState([]);
   const [customers, setCustomers] = useState([]);
@@ -804,14 +814,13 @@ const Bikes = () => {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // ------------------------------------------
-  // FETCH REGISTERED BIKE RECORDS FROM FIRESTORE
-  // ------------------------------------------
+  // ==========================================
+  // FETCH REGISTERED BIKES
+  // ==========================================
 
   const fetchBikes = async (searchValue = "") => {
     try {
       setLoading(true);
-      setError("");
 
       const snapshot = await getDocs(collection(db, "bikes"));
 
@@ -823,6 +832,7 @@ const Bikes = () => {
       records.sort((a, b) => {
         const dateA = a.createdAt?.toMillis?.() || 0;
         const dateB = b.createdAt?.toMillis?.() || 0;
+
         return dateB - dateA;
       });
 
@@ -843,10 +853,11 @@ const Bikes = () => {
 
       setBikes(records);
     } catch (err) {
-      console.error("Bike records error:", err);
+      console.error("Bike loading error:", err);
+
       setError(
         err.code === "permission-denied"
-          ? "Permission denied while loading bike records. Check the Firestore bikes security rule."
+          ? "Permission denied while loading bikes. Check Firestore bikes rules."
           : err.message || "Unable to load bike records."
       );
     } finally {
@@ -854,9 +865,9 @@ const Bikes = () => {
     }
   };
 
-  // ------------------------------------------
-  // FETCH CUSTOMERS FROM FIRESTORE
-  // ------------------------------------------
+  // ==========================================
+  // FETCH CUSTOMERS
+  // ==========================================
 
   const fetchCustomers = async () => {
     try {
@@ -867,7 +878,6 @@ const Bikes = () => {
         ...item.data(),
       }));
 
-      // Do not show explicitly inactive customers.
       const activeCustomers = records.filter(
         (customer) => customer.active !== false
       );
@@ -879,6 +889,7 @@ const Bikes = () => {
       setCustomers(activeCustomers);
     } catch (err) {
       console.error("Customer loading error:", err);
+
       setError(
         err.code === "permission-denied"
           ? "Permission denied while reading customers. Check Firestore customer rules."
@@ -887,9 +898,9 @@ const Bikes = () => {
     }
   };
 
-  // ------------------------------------------
-  // FETCH INVENTORY FROM FIRESTORE
-  // ------------------------------------------
+  // ==========================================
+  // FETCH INVENTORY
+  // ==========================================
 
   const fetchInventory = async () => {
     try {
@@ -903,6 +914,7 @@ const Bikes = () => {
       setInventory(records);
     } catch (err) {
       console.error("Inventory loading error:", err);
+
       setError(
         err.code === "permission-denied"
           ? "Permission denied while reading inventory. Check Firestore inventory rules."
@@ -911,25 +923,24 @@ const Bikes = () => {
     }
   };
 
-  // ------------------------------------------
-  // INITIAL DATA LOADING
-  // ------------------------------------------
-
-  const loadInitialData = async () => {
-    await Promise.all([
-      fetchCustomers(),
-      fetchInventory(),
-      fetchBikes(),
-    ]);
-  };
+  // ==========================================
+  // INITIAL LOADING
+  // ==========================================
 
   useEffect(() => {
-    loadInitialData();
+    const loadData = async () => {
+      await Promise.all([
+        fetchCustomers(),
+        fetchInventory(),
+      ]);
+    };
+
+    loadData();
   }, []);
 
-  // ------------------------------------------
-  // SEARCH
-  // ------------------------------------------
+  // ==========================================
+  // SEARCH BIKE RECORDS
+  // ==========================================
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -939,9 +950,9 @@ const Bikes = () => {
     return () => clearTimeout(timer);
   }, [search]);
 
-  // ------------------------------------------
-  // FORM INPUT CHANGES
-  // ------------------------------------------
+  // ==========================================
+  // INPUT HANDLER
+  // ==========================================
 
   const handleChange = (e) => {
     const { name, value } = e.target;
@@ -952,9 +963,9 @@ const Bikes = () => {
     }));
   };
 
-  // ------------------------------------------
-  // SELECT BIKE FROM INVENTORY
-  // ------------------------------------------
+  // ==========================================
+  // SELECT INVENTORY BIKE
+  // ==========================================
 
   const handleInventoryChange = (e) => {
     const selectedId = e.target.value;
@@ -972,6 +983,7 @@ const Bikes = () => {
         colour: "",
         bikePrice: "",
       }));
+
       return;
     }
 
@@ -989,14 +1001,14 @@ const Bikes = () => {
     }));
   };
 
-  // ------------------------------------------
+  // ==========================================
   // OPEN ADD FORM
-  // ------------------------------------------
+  // ==========================================
 
   const openAddForm = () => {
     setFormData({
       ...emptyForm,
-      purchaseDate: new Date().toISOString().split("T")[0],
+      purchaseDate: getLocalDate(),
     });
 
     setEditingId(null);
@@ -1005,9 +1017,9 @@ const Bikes = () => {
     setShowForm(true);
   };
 
-  // ------------------------------------------
+  // ==========================================
   // OPEN EDIT FORM
-  // ------------------------------------------
+  // ==========================================
 
   const handleEdit = (bike) => {
     setFormData({
@@ -1024,6 +1036,7 @@ const Bikes = () => {
     });
 
     setEditingId(bike.id);
+
     setError("");
     setSuccess("");
     setShowForm(true);
@@ -1034,9 +1047,9 @@ const Bikes = () => {
     });
   };
 
-  // ------------------------------------------
-  // SAVE OR UPDATE BIKE
-  // ------------------------------------------
+  // ==========================================
+  // SAVE / UPDATE BIKE
+  // ==========================================
 
   const handleSubmit = async (e) => {
     e.preventDefault();
@@ -1048,7 +1061,9 @@ const Bikes = () => {
       setError("");
       setSuccess("");
 
-      if (!auth.currentUser) {
+      const currentUser = auth.currentUser;
+
+      if (!currentUser) {
         throw new Error("Please sign in again before saving.");
       }
 
@@ -1064,9 +1079,9 @@ const Bikes = () => {
         throw new Error("Please select a purchase date.");
       }
 
-      // --------------------------------------
-      // EDIT EXISTING BIKE
-      // --------------------------------------
+      // ======================================
+      // UPDATE EXISTING REGISTERED BIKE
+      // ======================================
 
       if (editingId) {
         const bikeRef = doc(db, "bikes", editingId);
@@ -1075,21 +1090,25 @@ const Bikes = () => {
           customerId: selectedCustomer.id,
           customerName: selectedCustomer.name || "",
           customerPhone: selectedCustomer.phone || "",
+
           brand: formData.brand.trim(),
           model: formData.model.trim(),
           colour: formData.colour.trim(),
+
           registrationNumber: formData.registrationNumber.trim(),
           chassisNumber: formData.chassisNumber.trim(),
           engineNumber: formData.engineNumber.trim(),
+
           purchaseDate: formData.purchaseDate,
+
           updatedAt: serverTimestamp(),
         });
 
         setSuccess("Bike details updated successfully.");
       } else {
-        // ------------------------------------
+        // ====================================
         // REGISTER NEW BIKE
-        // ------------------------------------
+        // ====================================
 
         if (!formData.inventoryBike) {
           throw new Error("Please select a bike from inventory.");
@@ -1113,7 +1132,7 @@ const Bikes = () => {
           showroomPrice <= 0
         ) {
           throw new Error(
-            "A valid showroom price is required. Update the price in Bike Inventory."
+            "Please configure a valid showroom price in Bike Inventory."
           );
         }
 
@@ -1122,7 +1141,7 @@ const Bikes = () => {
           !Number.isFinite(purchasePrice) ||
           purchasePrice <= 0
         ) {
-          throw new Error("Please enter a valid bike purchase price.");
+          throw new Error("Please enter a valid purchase price.");
         }
 
         if (purchasePrice > showroomPrice) {
@@ -1139,34 +1158,47 @@ const Bikes = () => {
 
         const newBikeRef = doc(collection(db, "bikes"));
 
-        // Atomically reduce stock and create the registered bike.
+        // ====================================
+        // ATOMIC FIRESTORE TRANSACTION
+        // ====================================
+
         await runTransaction(db, async (transaction) => {
           const inventorySnapshot = await transaction.get(inventoryRef);
 
           if (!inventorySnapshot.exists()) {
-            throw new Error("This inventory model no longer exists.");
+            throw new Error("Inventory bike no longer exists.");
           }
 
           const currentBike = inventorySnapshot.data();
-          const currentStock = Number(currentBike.stock || 0);
 
-          if (currentStock <= 0) {
+          const currentStock = Number(currentBike.stock);
+
+          if (
+            !Number.isInteger(currentStock) ||
+            currentStock <= 0
+          ) {
             throw new Error(
-              "This bike is out of stock. Refresh inventory and try another model."
+              "This bike is out of stock. Please refresh inventory."
             );
           }
 
-          transaction.update(inventoryRef, {
+          // Preserve the existing inventory creator.
+          const inventoryUpdate = {
             stock: currentStock - 1,
             updatedAt: serverTimestamp(),
-          });
+          };
 
+          // Update the inventory stock.
+          transaction.update(inventoryRef, inventoryUpdate);
+
+          // Create the customer bike record.
           transaction.set(newBikeRef, {
             customerId: selectedCustomer.id,
             customerName: selectedCustomer.name || "",
             customerPhone: selectedCustomer.phone || "",
 
             inventoryBikeId: selectedBike.id,
+
             brand: currentBike.brand || "",
             model: currentBike.model || "",
             colour: formData.colour.trim(),
@@ -1178,7 +1210,7 @@ const Bikes = () => {
             purchaseDate: formData.purchaseDate,
             bikePrice: purchasePrice,
 
-            createdBy: auth.currentUser.uid,
+            createdBy: currentUser.uid,
             createdAt: serverTimestamp(),
           });
         });
@@ -1188,9 +1220,9 @@ const Bikes = () => {
         );
       }
 
-      // --------------------------------------
-      // RESET AND REFRESH
-      // --------------------------------------
+      // ======================================
+      // RESET FORM AND REFRESH DATA
+      // ======================================
 
       setShowForm(false);
       setFormData(emptyForm);
@@ -1205,7 +1237,7 @@ const Bikes = () => {
 
       setError(
         err.code === "permission-denied"
-          ? "Permission denied. Check the Firestore security rules for bikes and inventory."
+          ? "Firestore permission denied. Check customer, bikes and inventory rules. Also verify the inventory document has its original createdBy field."
           : err.message || "Unable to save bike details."
       );
     } finally {
@@ -1213,9 +1245,9 @@ const Bikes = () => {
     }
   };
 
-  // ------------------------------------------
-  // DELETE BIKE RECORD
-  // ------------------------------------------
+  // ==========================================
+  // DELETE REGISTERED BIKE
+  // ==========================================
 
   const handleDelete = async (id) => {
     const confirmed = window.confirm(
@@ -1239,7 +1271,7 @@ const Bikes = () => {
 
       setError(
         err.code === "permission-denied"
-          ? "Permission denied. Check the Firestore bikes delete rule."
+          ? "Permission denied while deleting the bike record."
           : err.message || "Unable to delete bike record."
       );
     } finally {
@@ -1247,19 +1279,17 @@ const Bikes = () => {
     }
   };
 
-  // ------------------------------------------
+  // ==========================================
   // AVAILABLE INVENTORY
-  // ------------------------------------------
+  // ==========================================
 
-  const availableInventory = useMemo(
-    () =>
-      inventory.filter(
-        (bike) =>
-          bike.isActive !== false &&
-          Number(bike.stock) > 0
-      ),
-    [inventory]
-  );
+  const availableInventory = useMemo(() => {
+    return inventory.filter(
+      (bike) =>
+        bike.isActive !== false &&
+        Number(bike.stock) > 0
+    );
+  }, [inventory]);
 
   const selectedInventoryBike = inventory.find(
     (bike) => bike.id === formData.inventoryBike
@@ -1285,15 +1315,18 @@ const Bikes = () => {
     validShowroomPrice &&
     purchasePrice <= showroomPrice;
 
-  // ------------------------------------------
-  // RENDER
-  // ------------------------------------------
+  // ==========================================
+  // RENDER PAGE
+  // ==========================================
 
   return (
     <div className="dashboard-layout">
       <Sidebar />
 
       <main className="bikes-main">
+
+        {/* PAGE HEADER */}
+
         <header className="bikes-header">
           <div>
             <h1>Bike Management</h1>
@@ -1310,6 +1343,7 @@ const Bikes = () => {
         </header>
 
         {/* SUMMARY */}
+
         <section className="bike-summary">
           <div>
             <span>Total Bike Records</span>
@@ -1320,6 +1354,7 @@ const Bikes = () => {
         </section>
 
         {/* SEARCH */}
+
         <div className="bike-toolbar">
           <input
             type="search"
@@ -1330,6 +1365,7 @@ const Bikes = () => {
         </div>
 
         {/* ALERTS */}
+
         {error && (
           <div className="bike-alert error" role="alert">
             {error}
@@ -1343,8 +1379,10 @@ const Bikes = () => {
         )}
 
         {/* ADD / EDIT FORM */}
+
         {showForm && (
           <section className="bike-form-card">
+
             <div className="bike-form-heading">
               <h2>
                 {editingId ? "Edit Bike Details" : "Register New Bike"}
@@ -1360,11 +1398,15 @@ const Bikes = () => {
             </div>
 
             <form onSubmit={handleSubmit}>
+
               <div className="bike-form-grid">
 
-                {/* CUSTOMER */}
+                {/* CUSTOMER SELECTION */}
+
                 <div className="bike-field full-width">
-                  <label htmlFor="customer">Select Customer *</label>
+                  <label htmlFor="customer">
+                    Select Customer *
+                  </label>
 
                   <select
                     id="customer"
@@ -1384,12 +1426,13 @@ const Bikes = () => {
 
                   {customers.length === 0 && (
                     <small>
-                      No customers found in Firestore. Add a customer first.
+                      No active customers found. Add a customer first.
                     </small>
                   )}
                 </div>
 
                 {/* INVENTORY SELECTION */}
+
                 {!editingId && (
                   <div className="bike-field full-width">
                     <label htmlFor="inventoryBike">
@@ -1403,7 +1446,9 @@ const Bikes = () => {
                       onChange={handleInventoryChange}
                       required
                     >
-                      <option value="">Choose an available bike</option>
+                      <option value="">
+                        Choose an available bike
+                      </option>
 
                       {availableInventory.map((bike) => (
                         <option key={bike.id} value={bike.id}>
@@ -1421,6 +1466,7 @@ const Bikes = () => {
                 )}
 
                 {/* SELECTED BIKE DETAILS */}
+
                 {!editingId && selectedInventoryBike && (
                   <div className="bike-field full-width">
                     <div
@@ -1468,6 +1514,7 @@ const Bikes = () => {
                 )}
 
                 {/* EDIT MODE */}
+
                 {editingId && (
                   <>
                     <div className="bike-field">
@@ -1495,11 +1542,13 @@ const Bikes = () => {
                 )}
 
                 {/* COLOUR */}
+
                 <div className="bike-field">
                   <label>Colour</label>
 
                   {!editingId &&
-                  selectedInventoryBike?.colors?.length > 0 ? (
+                  Array.isArray(selectedInventoryBike?.colors) &&
+                  selectedInventoryBike.colors.length > 0 ? (
                     <select
                       name="colour"
                       value={formData.colour}
@@ -1523,7 +1572,8 @@ const Bikes = () => {
                   )}
                 </div>
 
-                {/* REGISTRATION */}
+                {/* REGISTRATION NUMBER */}
+
                 <div className="bike-field">
                   <label>Registration Number</label>
 
@@ -1535,7 +1585,8 @@ const Bikes = () => {
                   />
                 </div>
 
-                {/* CHASSIS */}
+                {/* CHASSIS NUMBER */}
+
                 <div className="bike-field">
                   <label>Chassis Number</label>
 
@@ -1547,7 +1598,8 @@ const Bikes = () => {
                   />
                 </div>
 
-                {/* ENGINE */}
+                {/* ENGINE NUMBER */}
+
                 <div className="bike-field">
                   <label>Engine Number</label>
 
@@ -1560,6 +1612,7 @@ const Bikes = () => {
                 </div>
 
                 {/* PURCHASE DATE */}
+
                 <div className="bike-field">
                   <label>Purchase Date *</label>
 
@@ -1573,6 +1626,7 @@ const Bikes = () => {
                 </div>
 
                 {/* PURCHASE PRICE */}
+
                 <div className="bike-field">
                   <label>Bike Purchase Price (₹) *</label>
 
@@ -1600,7 +1654,7 @@ const Bikes = () => {
                         ? `₹${showroomPrice.toLocaleString("en-IN")}`
                         : "Price not configured"}
                       <br />
-                      Discounts are allowed, but purchase price cannot exceed showroom price.
+                      Discounts are allowed, but the purchase price cannot exceed showroom price.
                     </small>
                   )}
 
@@ -1610,10 +1664,13 @@ const Bikes = () => {
                     </small>
                   )}
                 </div>
+
               </div>
 
-              {/* BUTTONS */}
+              {/* FORM ACTIONS */}
+
               <div className="bike-form-actions">
+
                 <button
                   type="button"
                   className="bike-cancel-button"
@@ -1630,10 +1687,12 @@ const Bikes = () => {
                     saving ||
                     customers.length === 0 ||
                     (!editingId &&
-                      (!formData.inventoryBike ||
+                      (
+                        !formData.inventoryBike ||
                         !selectedInventoryBike ||
                         !validShowroomPrice ||
-                        !validPurchasePrice))
+                        !validPurchasePrice
+                      ))
                   }
                 >
                   {saving
@@ -1642,27 +1701,34 @@ const Bikes = () => {
                       ? "Update Bike"
                       : "Confirm Purchase & Register"}
                 </button>
+
               </div>
             </form>
           </section>
         )}
 
-        {/* BIKE RECORDS */}
+        {/* REGISTERED BIKE RECORDS */}
+
         <section className="bike-table-card">
+
           <div className="bike-table-heading">
             <h2>Bike Records</h2>
             <span>{bikes.length} records</span>
           </div>
 
           {loading ? (
-            <p className="bike-empty">Loading bike records...</p>
+            <p className="bike-empty">
+              Loading bike records...
+            </p>
           ) : bikes.length === 0 ? (
             <p className="bike-empty">
               No bike records found. Add your first bike.
             </p>
           ) : (
             <div className="bike-table-wrapper">
+
               <table className="bike-table">
+
                 <thead>
                   <tr>
                     <th>Customer</th>
@@ -1677,9 +1743,15 @@ const Bikes = () => {
                 <tbody>
                   {bikes.map((bike) => (
                     <tr key={bike.id}>
+
                       <td>
-                        <strong>{bike.customerName || "Unknown"}</strong>
-                        <small>{bike.customerPhone || ""}</small>
+                        <strong>
+                          {bike.customerName || "Unknown"}
+                        </strong>
+
+                        <small>
+                          {bike.customerPhone || ""}
+                        </small>
                       </td>
 
                       <td>
@@ -1704,6 +1776,7 @@ const Bikes = () => {
 
                       <td>
                         <div className="bike-actions">
+
                           <button
                             type="button"
                             className="bike-edit-button"
@@ -1719,19 +1792,30 @@ const Bikes = () => {
                             onClick={() => handleDelete(bike.id)}
                             disabled={Boolean(deletingId) || saving}
                           >
-                            {deletingId === bike.id ? "Deleting..." : "Delete"}
+                            {deletingId === bike.id
+                              ? "Deleting..."
+                              : "Delete"}
                           </button>
+
                         </div>
                       </td>
+
                     </tr>
                   ))}
                 </tbody>
+
               </table>
             </div>
           )}
         </section>
+
       </main>
     </div>
+  );
+};
+
+export default Bikes;
+
   );
 };
 
