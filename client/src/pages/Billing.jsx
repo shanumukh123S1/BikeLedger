@@ -5182,8 +5182,7 @@ function Billing() {
   useEffect(() => {
     fetchBillingData();
   }, [fetchBillingData]);
-
-  /* =======================================================
+    /* =======================================================
      SELECTED BIKE AND EMI CALCULATIONS
   ======================================================= */
 
@@ -5495,8 +5494,7 @@ function Billing() {
         totalPayable: bikePrice,
       };
     }
-
-    try {
+        try {
       setSaving(true);
       setError("");
       setSuccess("");
@@ -5756,8 +5754,7 @@ function Billing() {
       installmentNumber,
     }));
   };
-
-  /* =======================================================
+    /* =======================================================
      RECORD PAYMENT
   ======================================================= */
 
@@ -6153,8 +6150,7 @@ function Billing() {
             </div>
           </div>
         </section>
-
-        {/* TABS */}
+                {/* TABS */}
 
         <div className="billing-tabs">
           <button
@@ -6477,28 +6473,35 @@ function Billing() {
                                                 #
                                                 {item.installmentNumber}
                                               </td>
+
                                               <td>{item.dueDate}</td>
+
                                               <td>
                                                 {money(
                                                   item.principalAmount
                                                 )}
                                               </td>
+
                                               <td>
                                                 {money(
                                                   item.interestAmount
                                                 )}
                                               </td>
+
                                               <td>
                                                 {money(
                                                   item.installmentAmount
                                                 )}
                                               </td>
+
                                               <td className="billing-paid-amount">
                                                 {money(item.paidAmount)}
                                               </td>
+
                                               <td className="billing-due-amount">
                                                 {money(remaining)}
                                               </td>
+
                                               <td>
                                                 <span
                                                   className={statusClass(
@@ -6508,6 +6511,7 @@ function Billing() {
                                                   {displayStatus}
                                                 </span>
                                               </td>
+
                                               <td>
                                                 {remaining > 0.01 && (
                                                   <button
@@ -6543,8 +6547,7 @@ function Billing() {
             )}
           </section>
         )}
-
-        {/* PAYMENT HISTORY TAB */}
+                {/* PAYMENT HISTORY TAB */}
 
         {activeTab === "payments" && (
           <section className="billing-content">
@@ -6914,8 +6917,7 @@ function Billing() {
                       />
                     </div>
                   </div>
-
-                  {/* EMI PREVIEW */}
+                                    {/* EMI PREVIEW */}
 
                   <div className="billing-emi-preview">
                     <div className="billing-preview-heading">
@@ -7218,8 +7220,7 @@ function Billing() {
                   />
                 </div>
               </div>
-
-              <div className="billing-form-group">
+                            <div className="billing-form-group">
                 <label>Notes</label>
                 <textarea
                   name="notes"
@@ -7261,4 +7262,3 @@ function Billing() {
 }
 
 export default Billing;
-
