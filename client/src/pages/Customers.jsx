@@ -21,6 +21,11 @@ const emptyForm = {
   notes: "",
 };
 
+const getIndexedCustomerIds = (data) => {
+  if (Array.isArray(data?.customerIds)) return data.customerIds;
+  return data?.customerId ? [data.customerId] : [];
+};
+
 const Customers = () => {
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState("");
@@ -81,11 +86,6 @@ const Customers = () => {
         phoneGroups.set(phone, owners);
       });
 
-      const readIndexedOwners = (data) => {
-        if (Array.isArray(data?.customerIds)) return data.customerIds;
-        return data?.customerId ? [data.customerId] : [];
-      };
-
       await Promise.all(
         Array.from(phoneGroups.entries()).map(async ([phone, customerIds]) => {
           const phoneRef = doc(db, "customerPhoneIndex", phone);
@@ -93,7 +93,7 @@ const Customers = () => {
           await runTransaction(db, async (transaction) => {
             const phoneSnapshot = await transaction.get(phoneRef);
             const existingOwners = phoneSnapshot.exists()
-              ? readIndexedOwners(phoneSnapshot.data())
+              ? getIndexedCustomerIds(phoneSnapshot.data())
               : [];
 
             const mergedOwners = Array.from(
@@ -286,7 +286,7 @@ const Customers = () => {
         }
 
         const indexedOwners = phoneSnapshot.exists()
-          ? readIndexedOwners(phoneSnapshot.data())
+          ? getIndexedCustomerIds(phoneSnapshot.data())
           : [];
         const otherOwners = indexedOwners.filter(
           (ownerId) => ownerId !== customerRef.id
@@ -312,7 +312,7 @@ const Customers = () => {
             const previousPhoneSnapshot = await transaction.get(previousPhoneRef);
 
             if (previousPhoneSnapshot.exists()) {
-              const previousOwners = readIndexedOwners(
+              const previousOwners = getIndexedCustomerIds(
                 previousPhoneSnapshot.data()
               );
               const remainingOwners = previousOwners.filter(
@@ -410,7 +410,7 @@ const Customers = () => {
           const phoneSnapshot = await transaction.get(phoneRef);
 
           if (phoneSnapshot.exists()) {
-            const owners = readIndexedOwners(phoneSnapshot.data());
+            const owners = getIndexedCustomerIds(phoneSnapshot.data());
             const remainingOwners = owners.filter(
               (ownerId) => ownerId !== id
             );
