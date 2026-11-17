@@ -395,8 +395,15 @@
 
 // export default Payments;
 
-import React, { useCallback, useEffect, useMemo, useState } from "react";
-import { collection, getDocs } from "firebase/firestore";
+
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  collection,
+  getDocs,
+  query,
+  orderBy,
+} from "firebase/firestore";
+
 import { db } from "../firebase";
 import Sidebar from "../components/Sidebar";
 import "../styles/Payments.css";
@@ -411,7 +418,7 @@ const formatCurrency = (amount) =>
 const toDate = (value) => {
   if (!value) return null;
 
-  if (typeof value?.toDate === "function") {
+  if (typeof value.toDate === "function") {
     return value.toDate();
   }
 
@@ -430,6 +437,7 @@ const toDate = (value) => {
 
 const formatDate = (value) => {
   const date = toDate(value);
+
   if (!date) return "—";
 
   return date.toLocaleDateString("en-IN", {
@@ -439,108 +447,97 @@ const formatDate = (value) => {
   });
 };
 
-const escapeHtml = (value) =>
-  String(value ?? "").replace(/[&<>"']/g, (character) => {
-    const entities = {
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      '"': "&quot;",
-      "'": "&#39;",
-    };
-    return entities[character];
-  });
+const getCustomerName = (payment) =>
+  payment.customerName ||
+  payment.customer?.name ||
+  payment.customer?.customerName ||
+  "—";
+
+const getCustomerPhone = (payment) =>
+  payment.customerPhone ||
+  payment.customer?.phone ||
+  "";
+
+const getInvoiceNumber = (payment) =>
+  payment.invoiceNumber ||
+  payment.invoice?.invoiceNumber ||
+  payment.invoiceId ||
+  "—";
+
+const getPaymentId = (payment) =>
+  payment.id || payment.paymentId || payment._id || "—";
+
+const escapeHTML = (value) =>
+  String(value ?? "").replace(/[&<>"']/g, (character) => ({
+    "&": "&amp;",
+    "<": "&lt;",
+    ">": "&gt;",
+    '"': "&quot;",
+    "'": "&#39;",
+  })[character]);
 
 const Payments = () => {
   const [payments, setPayments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState("");
+
   const [search, setSearch] = useState("");
   const [paymentTypeFilter, setPaymentTypeFilter] = useState("All");
   const [methodFilter, setMethodFilter] = useState("All");
   const [dateFilter, setDateFilter] = useState("All");
+
+  // ==========================================
+  // FETCH PAYMENTS DIRECTLY FROM FIRESTORE
+  // ==========================================
 
   const fetchPayments = useCallback(async () => {
     try {
       setLoading(true);
       setError("");
 
-      const [paymentSnapshot, invoiceSnapshot, customerSnapshot] =
-        await Promise.all([
-          getDocs(collection(db, "payments")),
-          getDocs(collection(db, "invoices")),
-          getDocs(collection(db, "customers")),
-        ]);
+      const paymentsRef = collection(db, "payments");
 
-      const invoices = invoiceSnapshot.docs.map((item) => ({
+      let snapshot;
+
+      try {
+        snapshot = await getDocs(
+          query(paymentsRef, orderBy("paymentDate", "desc")),
+        );
+      } catch (orderError) {
+        // Fallback for older records without a consistent paymentDate field.
+        console.warn(
+          "Payment date ordering unavailable. Loading without ordering.",
+          orderError,
+        );
+
+        snapshot = await getDocs(paymentsRef);
+      }
+
+      const records = snapshot.docs.map((item) => ({
         id: item.id,
         ...item.data(),
       }));
-
-      const customers = customerSnapshot.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
-      }));
-
-      const invoiceMap = new Map(invoices.map((item) => [item.id, item]));
-      const customerMap = new Map(customers.map((item) => [item.id, item]));
-
-      const records = paymentSnapshot.docs.map((item) => {
-        const data = item.data();
-
-        const invoice =
-          invoiceMap.get(data.invoiceId) ||
-          (data.invoice && typeof data.invoice === "object"
-            ? data.invoice
-            : {});
-
-        const customer =
-          customerMap.get(data.customerId) ||
-          (data.customer && typeof data.customer === "object"
-            ? data.customer
-            : {});
-
-        return {
-          id: item.id,
-          ...data,
-          customerName:
-            data.customerName ||
-            customer.name ||
-            data.customer?.name ||
-            "—",
-          customerPhone:
-            data.customerPhone ||
-            customer.phone ||
-            data.customer?.phone ||
-            "",
-          invoiceNumber:
-            data.invoiceNumber ||
-            invoice.invoiceNumber ||
-            data.invoice?.invoiceNumber ||
-            "—",
-          paymentType: data.paymentType || "—",
-          paymentMethod: data.paymentMethod || "—",
-          paymentDate: data.paymentDate || data.createdAt || null,
-          amount: Number(data.amount || 0),
-          transactionReference: data.transactionReference || "",
-          notes: data.notes || "",
-        };
-      });
 
       records.sort((a, b) => {
-        const dateA = toDate(a.paymentDate)?.getTime() || 0;
-        const dateB = toDate(b.paymentDate)?.getTime() || 0;
+        const dateA =
+          toDate(a.paymentDate || a.createdAt)?.getTime() || 0;
+
+        const dateB =
+          toDate(b.paymentDate || b.createdAt)?.getTime() || 0;
+
         return dateB - dateA;
       });
 
       setPayments(records);
+
+      console.log("Firebase payment records loaded:", records);
     } catch (err) {
-      console.error("Fetch Firebase payments error:", err);
+      console.error("Firebase payment loading error:", err);
 
       setError(
         err.code === "permission-denied"
-          ? "Permission denied. Check Firestore read rules for payments, invoices and customers."
-          : err.message || "Unable to load payment records. Please try again.",
+          ? "Permission denied. Check the Firestore payments read rules and active staff profile."
+          : err.message || "Unable to load payment records.",
       );
     } finally {
       setLoading(false);
@@ -551,17 +548,27 @@ const Payments = () => {
     fetchPayments();
   }, [fetchPayments]);
 
+  // ==========================================
+  // FILTER PAYMENT RECORDS
+  // ==========================================
+
   const filteredPayments = useMemo(() => {
     const now = new Date();
-    const query = search.trim().toLowerCase();
+    const searchText = search.trim().toLowerCase();
 
     return payments.filter((payment) => {
-      const matchesSearch = [
-        payment.customerName,
-        payment.invoiceNumber,
-        payment.transactionReference,
-        payment.id,
-      ].some((value) => String(value || "").toLowerCase().includes(query));
+      const customerName = getCustomerName(payment).toLowerCase();
+      const customerPhone = getCustomerPhone(payment).toLowerCase();
+      const invoiceNumber = String(getInvoiceNumber(payment)).toLowerCase();
+      const reference = String(
+        payment.transactionReference || "",
+      ).toLowerCase();
+
+      const matchesSearch =
+        customerName.includes(searchText) ||
+        customerPhone.includes(searchText) ||
+        invoiceNumber.includes(searchText) ||
+        reference.includes(searchText);
 
       const matchesType =
         paymentTypeFilter === "All" ||
@@ -571,45 +578,69 @@ const Payments = () => {
         methodFilter === "All" ||
         payment.paymentMethod === methodFilter;
 
-      const paymentDate = toDate(payment.paymentDate);
+      const paymentDate = toDate(
+        payment.paymentDate || payment.createdAt,
+      );
+
       let matchesDate = true;
 
       if (dateFilter !== "All") {
         if (!paymentDate) {
           matchesDate = false;
         } else if (dateFilter === "Today") {
-          matchesDate = paymentDate.toDateString() === now.toDateString();
+          matchesDate =
+            paymentDate.toDateString() === now.toDateString();
         } else if (dateFilter === "This Month") {
           matchesDate =
             paymentDate.getMonth() === now.getMonth() &&
             paymentDate.getFullYear() === now.getFullYear();
         } else if (dateFilter === "This Year") {
-          matchesDate = paymentDate.getFullYear() === now.getFullYear();
+          matchesDate =
+            paymentDate.getFullYear() === now.getFullYear();
         }
       }
 
-      return matchesSearch && matchesType && matchesMethod && matchesDate;
+      return (
+        matchesSearch &&
+        matchesType &&
+        matchesMethod &&
+        matchesDate
+      );
     });
-  }, [payments, search, paymentTypeFilter, methodFilter, dateFilter]);
+  }, [
+    payments,
+    search,
+    paymentTypeFilter,
+    methodFilter,
+    dateFilter,
+  ]);
+
+  // ==========================================
+  // PAYMENT STATISTICS
+  // ==========================================
 
   const statistics = useMemo(() => {
-    const today = new Date();
-
     const totalCollected = payments.reduce(
       (sum, payment) => sum + Number(payment.amount || 0),
       0,
     );
 
+    const today = new Date();
+
     const todayCollected = payments
       .filter((payment) => {
-        const date = toDate(payment.paymentDate);
+        const date = toDate(payment.paymentDate || payment.createdAt);
+
         return date && date.toDateString() === today.toDateString();
       })
-      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      .reduce(
+        (sum, payment) => sum + Number(payment.amount || 0),
+        0,
+      );
 
     const currentMonthCollected = payments
       .filter((payment) => {
-        const date = toDate(payment.paymentDate);
+        const date = toDate(payment.paymentDate || payment.createdAt);
 
         return (
           date &&
@@ -617,7 +648,10 @@ const Payments = () => {
           date.getFullYear() === today.getFullYear()
         );
       })
-      .reduce((sum, payment) => sum + Number(payment.amount || 0), 0);
+      .reduce(
+        (sum, payment) => sum + Number(payment.amount || 0),
+        0,
+      );
 
     return {
       totalTransactions: payments.length,
@@ -627,6 +661,10 @@ const Payments = () => {
     };
   }, [payments]);
 
+  // ==========================================
+  // PRINT PAYMENT RECEIPT
+  // ==========================================
+
   const printReceipt = (payment) => {
     const receiptWindow = window.open("", "_blank");
 
@@ -635,72 +673,152 @@ const Payments = () => {
       return;
     }
 
-    const customer = escapeHtml(payment.customerName);
-    const invoice = escapeHtml(payment.invoiceNumber);
-    const paymentId = escapeHtml(payment.id);
-    const paymentType = escapeHtml(payment.paymentType);
-    const paymentMethod = escapeHtml(payment.paymentMethod);
-    const paymentDate = escapeHtml(formatDate(payment.paymentDate));
-    const reference = escapeHtml(payment.transactionReference || "—");
-    const notes = escapeHtml(payment.notes || "—");
-    const amount = escapeHtml(formatCurrency(payment.amount));
+    const customer = escapeHTML(getCustomerName(payment));
+    const phone = escapeHTML(getCustomerPhone(payment));
+    const invoice = escapeHTML(getInvoiceNumber(payment));
+    const paymentId = escapeHTML(getPaymentId(payment));
+    const paymentDate = escapeHTML(
+      formatDate(payment.paymentDate || payment.createdAt),
+    );
+    const paymentType = escapeHTML(payment.paymentType || "—");
+    const paymentMethod = escapeHTML(payment.paymentMethod || "—");
+    const reference = escapeHTML(
+      payment.transactionReference || "—",
+    );
+    const notes = escapeHTML(payment.notes || "—");
+    const amount = escapeHTML(formatCurrency(payment.amount));
 
     receiptWindow.document.write(`
       <!DOCTYPE html>
       <html>
       <head>
         <title>BikeLedger Payment Receipt</title>
+
         <style>
           body {
             font-family: Arial, sans-serif;
             padding: 35px;
             color: #172033;
           }
+
           .receipt {
             max-width: 600px;
             margin: auto;
             border: 1px solid #ddd;
             padding: 30px;
           }
-          h1 { text-align: center; margin-bottom: 5px; }
-          .subtitle { text-align: center; color: #666; }
-          hr { border: 0; border-top: 1px dashed #aaa; margin: 25px 0; }
+
+          h1 {
+            text-align: center;
+            margin-bottom: 5px;
+          }
+
+          .subtitle {
+            text-align: center;
+            color: #666;
+          }
+
+          hr {
+            border: 0;
+            border-top: 1px dashed #aaa;
+            margin: 25px 0;
+          }
+
           .line {
             display: flex;
             justify-content: space-between;
             gap: 20px;
             margin: 15px 0;
           }
+
           .amount {
             font-size: 24px;
             font-weight: bold;
             text-align: center;
             margin: 25px 0;
           }
-          .footer { text-align: center; margin-top: 35px; color: #666; }
+
+          .footer {
+            text-align: center;
+            margin-top: 35px;
+            color: #666;
+          }
+
           @media print {
-            body { padding: 0; }
-            .receipt { border: none; }
+            body {
+              padding: 0;
+            }
+
+            .receipt {
+              border: none;
+            }
           }
         </style>
       </head>
+
       <body>
         <div class="receipt">
+
           <h1>BikeLedger</h1>
           <p class="subtitle">Payment Receipt</p>
+
           <hr />
-          <div class="line"><strong>Receipt ID</strong><span>${paymentId}</span></div>
-          <div class="line"><strong>Customer</strong><span>${customer}</span></div>
-          <div class="line"><strong>Invoice Number</strong><span>${invoice}</span></div>
-          <div class="line"><strong>Payment Date</strong><span>${paymentDate}</span></div>
-          <div class="line"><strong>Payment Type</strong><span>${paymentType}</span></div>
-          <div class="line"><strong>Payment Method</strong><span>${paymentMethod}</span></div>
-          <div class="line"><strong>Transaction Reference</strong><span>${reference}</span></div>
+
+          <div class="line">
+            <strong>Receipt ID</strong>
+            <span>${paymentId}</span>
+          </div>
+
+          <div class="line">
+            <strong>Customer</strong>
+            <span>${customer}</span>
+          </div>
+
+          <div class="line">
+            <strong>Phone</strong>
+            <span>${phone || "—"}</span>
+          </div>
+
+          <div class="line">
+            <strong>Invoice Number</strong>
+            <span>${invoice}</span>
+          </div>
+
+          <div class="line">
+            <strong>Payment Date</strong>
+            <span>${paymentDate}</span>
+          </div>
+
+          <div class="line">
+            <strong>Payment Type</strong>
+            <span>${paymentType}</span>
+          </div>
+
+          <div class="line">
+            <strong>Payment Method</strong>
+            <span>${paymentMethod}</span>
+          </div>
+
+          <div class="line">
+            <strong>Transaction Reference</strong>
+            <span>${reference}</span>
+          </div>
+
           <hr />
+
           <div class="amount">${amount}</div>
-          <div class="line"><strong>Notes</strong><span>${notes}</span></div>
-          <div class="footer">Thank you for your payment!</div>
+
+          <div class="line">
+            <strong>Notes</strong>
+            <span>${notes}</span>
+          </div>
+
+          <div class="footer">
+            Thank you for your payment!
+          </div>
+
         </div>
+
         <script>
           window.onload = () => window.print();
         </script>
@@ -711,16 +829,23 @@ const Payments = () => {
     receiptWindow.document.close();
   };
 
+  // ==========================================
+  // PAGE UI
+  // ==========================================
+
   return (
     <div className="dashboard-layout">
       <Sidebar />
 
       <main className="dashboard-main">
         <div className="payments-page">
+
           <div className="payments-header">
             <div>
               <h1>Payments Management</h1>
-              <p>Track and manage all customer payment transactions.</p>
+              <p>
+                Track and manage all customer payment transactions.
+              </p>
             </div>
 
             <button
@@ -728,11 +853,14 @@ const Payments = () => {
               onClick={fetchPayments}
               disabled={loading}
             >
-              ↻ Refresh
+              {loading ? "Loading..." : "↻ Refresh"}
             </button>
           </div>
 
+          {/* STATISTICS */}
+
           <div className="payments-stats">
+
             <div className="payment-stat-card">
               <span className="payment-stat-icon">₹</span>
               <div>
@@ -761,12 +889,18 @@ const Payments = () => {
               <span className="payment-stat-icon">▥</span>
               <div>
                 <p>This Month</p>
-                <h2>{formatCurrency(statistics.currentMonthCollected)}</h2>
+                <h2>
+                  {formatCurrency(statistics.currentMonthCollected)}
+                </h2>
               </div>
             </div>
+
           </div>
 
+          {/* TRANSACTION HISTORY */}
+
           <section className="payments-panel">
+
             <div className="payments-panel-header">
               <div>
                 <h2>Transaction History</h2>
@@ -778,7 +912,10 @@ const Payments = () => {
               </span>
             </div>
 
+            {/* FILTERS */}
+
             <div className="payments-filters">
+
               <input
                 type="search"
                 placeholder="Search customer, invoice or reference..."
@@ -817,26 +954,52 @@ const Payments = () => {
                 <option value="This Month">This Month</option>
                 <option value="This Year">This Year</option>
               </select>
+
             </div>
+
+            {/* ERROR */}
 
             {error && (
               <div className="payments-error" role="alert">
                 {error}
-                <button onClick={fetchPayments}>Retry</button>
+
+                <button onClick={fetchPayments}>
+                  Retry
+                </button>
               </div>
             )}
 
+            {/* LOADING */}
+
             {loading ? (
-              <div className="payments-message">Loading payment records...</div>
+              <div className="payments-message">
+                Loading payment records...
+              </div>
+
             ) : filteredPayments.length === 0 ? (
+
               <div className="payments-empty">
                 <div>₹</div>
-                <h3>No payment records found</h3>
-                <p>Payments recorded through Billing & EMI will appear here.</p>
+
+                <h3>
+                  {payments.length === 0
+                    ? "No payment records found"
+                    : "No matching payments found"}
+                </h3>
+
+                <p>
+                  {payments.length === 0
+                    ? "Payment records saved in Firebase will appear here."
+                    : "Try changing your search or filters."}
+                </p>
               </div>
+
             ) : (
+
               <div className="payments-table-wrapper">
+
                 <table className="payments-table">
+
                   <thead>
                     <tr>
                       <th>Payment ID</th>
@@ -852,32 +1015,47 @@ const Payments = () => {
                   </thead>
 
                   <tbody>
+
                     {filteredPayments.map((payment) => (
+
                       <tr key={payment.id}>
+
                         <td className="payment-id">
-                          #{payment.id.slice(-7).toUpperCase()}
+                          #{String(payment.id).slice(-7).toUpperCase()}
                         </td>
 
-                        <td>{payment.customerName}</td>
-                        <td>{payment.invoiceNumber}</td>
+                        <td>
+                          <strong>{getCustomerName(payment)}</strong>
+                          <small>{getCustomerPhone(payment)}</small>
+                        </td>
+
+                        <td>{getInvoiceNumber(payment)}</td>
 
                         <td>
                           <span className="payment-type-badge">
-                            {payment.paymentType}
+                            {payment.paymentType || "—"}
+
                             {payment.installmentNumber
                               ? ` #${payment.installmentNumber}`
                               : ""}
                           </span>
                         </td>
 
-                        <td>{payment.paymentMethod}</td>
-                        <td>{formatDate(payment.paymentDate)}</td>
+                        <td>{payment.paymentMethod || "—"}</td>
+
+                        <td>
+                          {formatDate(
+                            payment.paymentDate || payment.createdAt,
+                          )}
+                        </td>
 
                         <td className="payment-amount">
                           {formatCurrency(payment.amount)}
                         </td>
 
-                        <td>{payment.transactionReference || "—"}</td>
+                        <td>
+                          {payment.transactionReference || "—"}
+                        </td>
 
                         <td>
                           <button
@@ -887,13 +1065,21 @@ const Payments = () => {
                             Print
                           </button>
                         </td>
+
                       </tr>
+
                     ))}
+
                   </tbody>
+
                 </table>
+
               </div>
+
             )}
+
           </section>
+
         </div>
       </main>
     </div>
@@ -901,5 +1087,4 @@ const Payments = () => {
 };
 
 export default Payments;
-
 
