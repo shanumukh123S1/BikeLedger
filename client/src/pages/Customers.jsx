@@ -1,13 +1,5 @@
 import { useEffect, useState } from "react";
-import {
-  collection,
-  getDocs,
-  doc,
-  serverTimestamp,
-  runTransaction,
-} from "firebase/firestore";
-
-import { db, auth } from "../firebase";
+import api from "../services/api";
 import Sidebar from "../components/Sidebar";
 import "../styles/Customers.css";
 
@@ -21,11 +13,6 @@ const emptyForm = {
   notes: "",
 };
 
-const getIndexedCustomerIds = (data) => {
-  if (Array.isArray(data?.customerIds)) return data.customerIds;
-  return data?.customerId ? [data.customerId] : [];
-};
-
 const Customers = () => {
   const [customers, setCustomers] = useState([]);
   const [search, setSearch] = useState("");
@@ -35,7 +22,6 @@ const Customers = () => {
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [deletingId, setDeletingId] = useState(null);
-  const [phoneIndexReady, setPhoneIndexReady] = useState(false);
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
@@ -56,92 +42,20 @@ const Customers = () => {
   const fetchCustomers = async () => {
     try {
       setLoading(true);
-      setPhoneIndexReady(false);
       setError("");
 
-      if (!auth.currentUser) {
-        throw new Error("Please sign in to access customer records.");
-      }
-
-      const customersRef = collection(db, "customers");
-      const snapshot = await getDocs(customersRef);
-
-      const customerList = snapshot.docs.map((item) => ({
-        id: item.id,
-        ...item.data(),
+      const response = await api.get("/customers");
+      const customerList = (response.data.customers || []).map((customer) => ({
+        ...customer,
+        id: customer._id,
       }));
 
-      // Backfill the phone index from existing customer documents. This is
-      // important because customers created before this validation existed
-      // are not yet represented in customerPhoneIndex.
-      const phoneGroups = new Map();
-
-      customerList.forEach((customer) => {
-        const phone = String(customer.phone || "").replace(/\D/g, "");
-
-        if (!/^\d{10}$/.test(phone)) return;
-
-        const owners = phoneGroups.get(phone) || [];
-        owners.push(customer.id);
-        phoneGroups.set(phone, owners);
-      });
-
-      await Promise.all(
-        Array.from(phoneGroups.entries()).map(async ([phone, customerIds]) => {
-          const phoneRef = doc(db, "customerPhoneIndex", phone);
-
-          await runTransaction(db, async (transaction) => {
-            const phoneSnapshot = await transaction.get(phoneRef);
-            const existingOwners = phoneSnapshot.exists()
-              ? getIndexedCustomerIds(phoneSnapshot.data())
-              : [];
-
-            const mergedOwners = Array.from(
-              new Set([...existingOwners, ...customerIds])
-            );
-
-            // Avoid repeated writes after the initial backfill.
-            const alreadyIndexed =
-              phoneSnapshot.exists() &&
-              customerIds.every((id) => existingOwners.includes(id)) &&
-              Array.isArray(phoneSnapshot.data().customerIds);
-
-            if (alreadyIndexed) return;
-
-            transaction.set(phoneRef, {
-              phone,
-              customerIds: mergedOwners,
-              customerId: mergedOwners.length === 1 ? mergedOwners[0] : null,
-              conflicted: mergedOwners.length > 1,
-              updatedAt: serverTimestamp(),
-              migratedAt: serverTimestamp(),
-            });
-          });
-        })
-      );
-
-      // Sort newest customers first
-      customerList.sort((a, b) => {
-        const dateA = a.createdAt?.toMillis
-          ? a.createdAt.toMillis()
-          : 0;
-
-        const dateB = b.createdAt?.toMillis
-          ? b.createdAt.toMillis()
-          : 0;
-
-        return dateB - dateA;
-      });
-
       setCustomers(customerList);
-      setPhoneIndexReady(true);
     } catch (err) {
-      console.error("Fetch customers error:", err);
-
+      console.error("Fetch customers error:", err.response?.data || err.message);
       setError(
-        err.code === "permission-denied"
-          ? "Access denied. Please check your Firestore security rules."
-          : err.message || "Unable to load customers."
+        err.response?.data?.message ||
+          "Unable to load customers. Please check the backend connection."
       );
     } finally {
       setLoading(false);
@@ -250,10 +164,6 @@ const Customers = () => {
       setError("");
       setSuccess("");
 
-      if (!auth.currentUser) {
-        throw new Error("Your session has expired. Please sign in again.");
-      }
-
       const customerData = {
         name: formData.name.trim(),
         phone: formData.phone.trim(),
@@ -262,102 +172,15 @@ const Customers = () => {
         guarantorName: formData.guarantorName.trim(),
         guarantorPhone: formData.guarantorPhone.trim(),
         notes: formData.notes.trim(),
-        updatedAt: serverTimestamp(),
       };
 
-      // Normalize mobile numbers so formatting differences cannot bypass
-      // duplicate checks (the input currently accepts exactly 10 digits).
-      const normalizedPhone = customerData.phone.replace(/\D/g, "");
-      const customerRef = editingId
-        ? doc(db, "customers", editingId)
-        : doc(collection(db, "customers"));
-      const phoneRef = doc(db, "customerPhoneIndex", normalizedPhone);
-
-      // Reserve the mobile number and write the customer atomically.
-      // Firestore transaction retries protect against concurrent submissions.
-      await runTransaction(db, async (transaction) => {
-        const phoneSnapshot = await transaction.get(phoneRef);
-        const customerSnapshot = editingId
-          ? await transaction.get(customerRef)
-          : null;
-
-        if (editingId && !customerSnapshot.exists()) {
-          throw new Error("Customer not found. Refresh and try again.");
-        }
-
-        const indexedOwners = phoneSnapshot.exists()
-          ? getIndexedCustomerIds(phoneSnapshot.data())
-          : [];
-        const otherOwners = indexedOwners.filter(
-          (ownerId) => ownerId !== customerRef.id
-        );
-
-        if (otherOwners.length > 0) {
-          throw new Error(
-            "This mobile number is already registered to another customer. Please enter a different number."
-          );
-        }
-
-        if (editingId) {
-          const previousPhone = String(
-            customerSnapshot.data().phone || ""
-          ).replace(/\D/g, "");
-
-          if (previousPhone && previousPhone !== normalizedPhone) {
-            const previousPhoneRef = doc(
-              db,
-              "customerPhoneIndex",
-              previousPhone
-            );
-            const previousPhoneSnapshot = await transaction.get(previousPhoneRef);
-
-            if (previousPhoneSnapshot.exists()) {
-              const previousOwners = getIndexedCustomerIds(
-                previousPhoneSnapshot.data()
-              );
-              const remainingOwners = previousOwners.filter(
-                (ownerId) => ownerId !== customerRef.id
-              );
-
-              if (remainingOwners.length === 0) {
-                transaction.delete(previousPhoneRef);
-              } else {
-                transaction.set(previousPhoneRef, {
-                  phone: previousPhone,
-                  customerIds: remainingOwners,
-                  customerId:
-                    remainingOwners.length === 1 ? remainingOwners[0] : null,
-                  conflicted: remainingOwners.length > 1,
-                  updatedAt: serverTimestamp(),
-                });
-              }
-            }
-          }
-
-          transaction.update(customerRef, customerData);
-        } else {
-          transaction.set(customerRef, {
-            ...customerData,
-            createdAt: serverTimestamp(),
-            createdBy: auth.currentUser.uid,
-          });
-        }
-
-        transaction.set(phoneRef, {
-          customerId: customerRef.id,
-          customerIds: [customerRef.id],
-          phone: normalizedPhone,
-          conflicted: false,
-          updatedAt: serverTimestamp(),
-          createdBy: auth.currentUser.uid,
-        });
-      });
-
-      setSuccess(
-        editingId
-          ? "Customer updated successfully!"
-          : "Customer added successfully!"
-      );
+      if (editingId) {
+        await api.put(`/customers/${editingId}`, customerData);
+        setSuccess("Customer updated successfully!");
+      } else {
+        await api.post("/customers", customerData);
+        setSuccess("Customer added successfully!");
+      }
 
       setShowForm(false);
       setFormData(emptyForm);
@@ -365,12 +188,10 @@ const Customers = () => {
 
       await fetchCustomers();
     } catch (err) {
-      console.error("Save customer error:", err);
-
+      console.error("Save customer error:", err.response?.data || err.message);
       setError(
-        err.code === "permission-denied"
-          ? "You do not have permission to save customer records."
-          : err.message || "Unable to save customer."
+        err.response?.data?.message ||
+          "Unable to save customer. Please try again."
       );
     } finally {
       setSaving(false);
@@ -390,48 +211,7 @@ const Customers = () => {
       setError("");
       setSuccess("");
 
-      if (!auth.currentUser) {
-        throw new Error("Please sign in again.");
-      }
-
-      const customerRef = doc(db, "customers", id);
-
-      await runTransaction(db, async (transaction) => {
-        const customerSnapshot = await transaction.get(customerRef);
-
-        if (!customerSnapshot.exists()) {
-          throw new Error("Customer no longer exists.");
-        }
-
-        const phone = String(customerSnapshot.data().phone || "").replace(/\D/g, "");
-
-        if (phone) {
-          const phoneRef = doc(db, "customerPhoneIndex", phone);
-          const phoneSnapshot = await transaction.get(phoneRef);
-
-          if (phoneSnapshot.exists()) {
-            const owners = getIndexedCustomerIds(phoneSnapshot.data());
-            const remainingOwners = owners.filter(
-              (ownerId) => ownerId !== id
-            );
-
-            if (remainingOwners.length === 0) {
-              transaction.delete(phoneRef);
-            } else {
-              transaction.set(phoneRef, {
-                phone,
-                customerIds: remainingOwners,
-                customerId:
-                  remainingOwners.length === 1 ? remainingOwners[0] : null,
-                conflicted: remainingOwners.length > 1,
-                updatedAt: serverTimestamp(),
-              });
-            }
-          }
-        }
-
-        transaction.delete(customerRef);
-      });
+      await api.delete(`/customers/${id}`);
 
       setCustomers((previous) =>
         previous.filter((customer) => customer.id !== id)
@@ -439,12 +219,10 @@ const Customers = () => {
 
       setSuccess("Customer deleted successfully!");
     } catch (err) {
-      console.error("Delete customer error:", err);
-
+      console.error("Delete customer error:", err.response?.data || err.message);
       setError(
-        err.code === "permission-denied"
-          ? "You do not have permission to delete this customer."
-          : err.message || "Unable to delete customer."
+        err.response?.data?.message ||
+          "Unable to delete customer. Please try again."
       );
     } finally {
       setDeletingId(null);
@@ -634,12 +412,10 @@ const Customers = () => {
                 <button
                   type="submit"
                   className="save-button"
-                  disabled={saving || !phoneIndexReady}
+                  disabled={saving}
                 >
                   {saving
                     ? "Saving..."
-                    : !phoneIndexReady
-                      ? "Checking Phone Numbers..."
                     : editingId
                       ? "Update Customer"
                       : "Save Customer"}
