@@ -1,0 +1,58 @@
+name: Validate BikeLedger MERN
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  frontend-build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+
+      - name: Install frontend dependencies
+        working-directory: client
+        run: npm ci
+
+      - name: Verify frontend contains no Firebase imports
+        working-directory: client
+        run: |
+          if grep -R -n -E 'from ["'\''"]firebase/|from ["'\''"]\.\./firebase' src; then
+            echo "Firebase import found. BikeLedger must use the Express/MongoDB API."
+            exit 1
+          fi
+
+      - name: Build React application
+        working-directory: client
+        run: npm run build
+
+  backend-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: server/package-lock.json
+
+      - name: Install backend dependencies
+        working-directory: server
+        run: npm ci
+
+      - name: Check backend JavaScript syntax
+        run: |
+          find server -type f -name '*.js' -not -path '*/node_modules/*' -print0 | xargs -0 -n1 node --check
