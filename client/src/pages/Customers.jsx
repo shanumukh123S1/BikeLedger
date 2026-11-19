@@ -25,7 +25,7 @@ const Customers = () => {
   const [error, setError] = useState("");
   const [success, setSuccess] = useState("");
 
-  // Convert Firestore timestamp safely
+  // Convert MongoDB date values safely
   const formatDate = (timestamp) => {
     if (!timestamp) return "—";
 
@@ -38,7 +38,7 @@ const Customers = () => {
     return date.toLocaleDateString("en-IN");
   };
 
-  // Fetch customers from Firestore
+  // Fetch customers from the Express API
   const fetchCustomers = async () => {
     try {
       setLoading(true);
@@ -153,7 +153,7 @@ const Customers = () => {
     return true;
   };
 
-  // Add or update customer in Firestore
+  // Add or update customer through the Express API
   const handleSubmit = async (e) => {
     e.preventDefault();
 
@@ -198,7 +198,7 @@ const Customers = () => {
     }
   };
 
-  // Delete customer from Firestore
+  // Delete customer through the Express API
   const handleDelete = async (id) => {
     const confirmed = window.confirm(
       "Are you sure you want to permanently delete this customer?"
