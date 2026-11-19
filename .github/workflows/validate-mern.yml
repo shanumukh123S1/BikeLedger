@@ -27,7 +27,7 @@ jobs:
       - name: Verify frontend contains no Firebase imports
         working-directory: client
         run: |
-          if grep -R -n -E 'from ["'\''"]firebase/|from ["'\''"]\.\./firebase' src; then
+          if grep -R -n "firebase" src; then
             echo "Firebase import found. BikeLedger must use the Express/MongoDB API."
             exit 1
           fi
