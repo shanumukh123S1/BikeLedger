@@ -84,8 +84,23 @@ const createBike = async (req, res) => {
     }
 
     // Normalize identification numbers
+    const normalizedRegistration = normalizeNumber(registrationNumber);
     const normalizedChassis = normalizeNumber(chassisNumber);
     const normalizedEngine = normalizeNumber(engineNumber);
+
+    // Check duplicate registration number.
+    if (normalizedRegistration) {
+      const duplicateRegistration = await Bike.findOne({
+        registrationNumber: normalizedRegistration,
+      });
+
+      if (duplicateRegistration) {
+        return res.status(409).json({
+          success: false,
+          message: "This registration number is already registered",
+        });
+      }
+    }
 
     // Check duplicate chassis number
     if (normalizedChassis) {
@@ -181,7 +196,7 @@ const createBike = async (req, res) => {
             brand: inventoryItem.brand,
             model: inventoryItem.model,
             colour: colour || "",
-            registrationNumber: registrationNumber || "",
+            registrationNumber: normalizedRegistration,
             chassisNumber: normalizedChassis,
             engineNumber: normalizedEngine,
             purchaseDate: date,
@@ -357,6 +372,25 @@ const updateBike = async (req, res) => {
       }
 
       updates.purchaseDate = date;
+    }
+
+    // Normalize registration number and check duplicates.
+    if (updates.registrationNumber !== undefined) {
+      updates.registrationNumber = normalizeNumber(updates.registrationNumber);
+
+      if (updates.registrationNumber) {
+        const duplicateRegistration = await Bike.findOne({
+          registrationNumber: updates.registrationNumber,
+          _id: { $ne: id },
+        });
+
+        if (duplicateRegistration) {
+          return res.status(409).json({
+            success: false,
+            message: "This registration number is already registered",
+          });
+        }
+      }
     }
 
     // Normalize chassis number and check duplicates.
